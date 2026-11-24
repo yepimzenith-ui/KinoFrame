@@ -1,0 +1,206 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile for KinoFrame Studio.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "username": {
+          "type": "string",
+          "description": "Unique lowercase studio handle (3-24 chars) or empty string before claimed.",
+          "minLength": 0,
+          "maxLength": 24,
+          "pattern": "^(|[a-z0-9_\\-]{3,24})$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified account email address.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile avatar URL or empty string.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when account record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when account record was last updated."
+        }
+      },
+      "required": ["uid", "displayName", "email", "photoURL", "createdAt", "updatedAt"]
+    },
+    "UsernameClaim": {
+      "title": "UsernameClaim",
+      "description": "Non-PII unique handle ownership record preventing duplicate usernames.",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Normalized lowercase unique handle.",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[a-z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the handle owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when handle was claimed."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when handle record was written."
+        }
+      },
+      "required": ["username", "ownerId", "createdAt", "updatedAt"]
+    },
+    "StudioProject": {
+      "title": "StudioProject",
+      "description": "Saved KinoFrame video sequence and photo grading project.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Project document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the project creator and sole owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "User-facing project title.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "mode": {
+          "type": "string",
+          "description": "Primary studio workspace for this project.",
+          "enum": ["timeline", "photo"]
+        },
+        "sequenceAspect": {
+          "type": "string",
+          "description": "Canvas aspect ratio identifier.",
+          "enum": ["16:9", "9:16", "1:1", "4:5", "2.39:1"]
+        },
+        "beatBpm": {
+          "type": "integer",
+          "description": "Beat grid tempo in beats per minute (40-240)."
+        },
+        "activeAssetId": {
+          "type": "string",
+          "description": "Currently active photo/media asset ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "previewAssetId": {
+          "type": "string",
+          "description": "Thumbnail preview asset ID.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "clipCount": {
+          "type": "integer",
+          "description": "Number of timeline clips in Track V1."
+        },
+        "totalDuration": {
+          "type": "number",
+          "description": "Total timeline sequence duration in seconds."
+        },
+        "clips": {
+          "type": "array",
+          "description": "Ordered list of Track V1 clips with keyframes, transitions, and EditDocument maps including shape masks (max 60)."
+        },
+        "globalOverlays": {
+          "type": "array",
+          "description": "List of Track T1 keyframed text, sticker, and mask overlay maps (max 40)."
+        },
+        "audioClips": {
+          "type": "array",
+          "description": "List of Track A1 audio clip reference maps (max 20)."
+        },
+        "photoEdits": {
+          "type": "object",
+          "description": "Map of assetId to Photo Lab EditDocument grading and masking settings (max 30 entries)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when project was first saved."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when project was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "mode",
+        "sequenceAspect",
+        "beatBpm",
+        "activeAssetId",
+        "previewAssetId",
+        "clipCount",
+        "totalDuration",
+        "clips",
+        "globalOverlays",
+        "audioClips",
+        "photoEdits",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated user account profiles containing email, display details, and optional unique username."
+    },
+    "/usernames/{username}": {
+      "schema": { "$ref": "#/entities/UsernameClaim" },
+      "description": "Zero-PII unique handle registry enforcing global case-insensitive username uniqueness."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/StudioProject" },
+      "description": "Saved KinoFrame video and photo editing projects isolated to ownerId."
+    }
+  }
+}

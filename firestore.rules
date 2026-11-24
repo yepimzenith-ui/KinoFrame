@@ -1,0 +1,208 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUsername(name) {
+      return name is string && name.size() >= 3 && name.size() <= 24 && name.matches('^[a-z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function hasClaimedUsername(username) {
+      return existsAfter(/databases/$(database)/documents/usernames/$(username))
+        && getAfter(/databases/$(database)/documents/usernames/$(username)).data.ownerId == request.auth.uid;
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap) ---
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'photoURL', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'username', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 80
+        && (!('username' in data) || (data.username is string && (data.username == '' || isValidUsername(data.username))))
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 160
+        && data.photoURL is string
+        && data.photoURL.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUsernameClaim(data, username) {
+      return data.keys().hasAll(['username', 'ownerId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['username', 'ownerId', 'createdAt', 'updatedAt'])
+        && isValidUsername(data.username)
+        && data.username == username
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data, projectId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'name', 'mode', 'sequenceAspect', 'beatBpm',
+          'activeAssetId', 'previewAssetId', 'clipCount', 'totalDuration',
+          'clips', 'globalOverlays', 'audioClips', 'photoEdits',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'mode', 'sequenceAspect', 'beatBpm',
+          'activeAssetId', 'previewAssetId', 'clipCount', 'totalDuration',
+          'clips', 'globalOverlays', 'audioClips', 'photoEdits',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == projectId
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 100
+        && data.mode in ['timeline', 'photo']
+        && data.sequenceAspect in ['16:9', '9:16', '1:1', '4:5', '2.39:1']
+        && data.beatBpm is int
+        && data.beatBpm >= 40
+        && data.beatBpm <= 240
+        && data.activeAssetId is string
+        && data.activeAssetId.size() >= 1
+        && data.activeAssetId.size() <= 128
+        && data.previewAssetId is string
+        && data.previewAssetId.size() >= 1
+        && data.previewAssetId.size() <= 128
+        && data.clipCount is int
+        && data.clipCount >= 0
+        && data.clipCount <= 60
+        && data.totalDuration is number
+        && data.totalDuration >= 0
+        && data.totalDuration <= 3600
+        && data.clips is list
+        && data.clips.size() <= 60
+        && (data.clips.size() == 0 || data.clips[0] is map)
+        && data.globalOverlays is list
+        && data.globalOverlays.size() <= 40
+        && (data.globalOverlays.size() == 0 || data.globalOverlays[0] is map)
+        && data.audioClips is list
+        && data.audioClips.size() <= 20
+        && (data.audioClips.size() == 0 || data.audioClips[0] is map)
+        && data.photoEdits is map
+        && data.photoEdits.size() <= 30
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection: /users/{userId} (PII strictly owner-only, no list) ---
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (!('username' in incoming()) || incoming().username == '' || hasClaimedUsername(incoming().username));
+
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'username', 'updatedAt'])
+        && (!('username' in incoming())
+            || incoming().username == ''
+            || (('username' in existing()) && incoming().username == existing().username)
+            || hasClaimedUsername(incoming().username));
+
+      allow delete: if isValidId(userId) && isOwner(userId);
+    }
+
+    // --- Collection: /usernames/{username} (Zero-PII unique handle lock, no list) ---
+    match /usernames/{username} {
+      allow get: if isValidUsername(username);
+      allow list: if false;
+
+      allow create: if isValidUsername(username)
+        && isVerifiedUser()
+        && !exists(/databases/$(database)/documents/usernames/$(username))
+        && isValidUsernameClaim(incoming(), username)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isValidUsername(username)
+        && isVerifiedUser()
+        && existing().ownerId == request.auth.uid;
+    }
+
+    // --- Collection: /projects/{projectId} (Saved Studio Projects) ---
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId)
+        && isVerifiedUser()
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isVerifiedUser()
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isValidId(projectId)
+        && isVerifiedUser()
+        && isValidProject(incoming(), projectId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(projectId)
+        && isVerifiedUser()
+        && isValidProject(incoming(), projectId)
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'mode', 'sequenceAspect', 'beatBpm',
+          'activeAssetId', 'previewAssetId', 'clipCount', 'totalDuration',
+          'clips', 'globalOverlays', 'audioClips', 'photoEdits', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(projectId)
+        && isVerifiedUser()
+        && existing().ownerId == request.auth.uid;
+    }
+  }
+}
