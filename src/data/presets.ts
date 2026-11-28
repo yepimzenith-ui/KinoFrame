@@ -1,8 +1,10 @@
 import {
   AspectRatioId,
+  BgRemovalSettings,
   ClipAnimationSettings,
   ClipAnimationType,
   ColorGrade,
+  DuotoneMapId,
   EditDocument,
   EffectsSettings,
   FilmPreset,
@@ -11,10 +13,16 @@ import {
   MaskSettings,
   MaskShape,
   MediaAsset,
+  MirrorTileMode,
+  OverlayBlendMode,
   StickerKind,
+  Text3DSettings,
+  Text3DStyleId,
+  TextStyleTemplateId,
   TransformSettings,
   TransitionType,
   VelocityPresetId,
+  VisualOverlayPresetId,
 } from '../types/editor';
 
 export const DEFAULT_COLOR_GRADE: ColorGrade = {
@@ -54,6 +62,24 @@ export const DEFAULT_MASK: MaskSettings = {
   bgEffect: 'cutout',
 };
 
+export const DEFAULT_BG_REMOVAL: BgRemovalSettings = {
+  enabled: false,
+  mode: 'auto',
+  autoSubjectType: 'smart',
+  backdropMode: 'original',
+  backdropColor: '#09090b',
+  backdropBlur: 48,
+  chromaColor: '#16a34a',
+  tolerance: 42,
+  softness: 18,
+  edgeShift: 0,
+  lumaTarget: 'bright',
+  invert: false,
+  pickPoints: [],
+  strokes: [],
+  drawnPolygons: [],
+};
+
 export const DEFAULT_EFFECTS: EffectsSettings = {
   vignette: 0,
   grain: 0,
@@ -65,6 +91,14 @@ export const DEFAULT_EFFECTS: EffectsSettings = {
   shake: 0,
   flashIn: false,
   letterbox: false,
+  glowBloom: 0,
+  radialBlur: 0,
+  motionBlur: 0,
+  glitch: 0,
+  pixelate: 0,
+  posterize: 0,
+  mirrorTile: 'none',
+  duotone: 'none',
 };
 
 export const DEFAULT_ANIMATION: ClipAnimationSettings = {
@@ -87,9 +121,11 @@ export function createDefaultEdits(
       fitMode,
     },
     mask: { ...DEFAULT_MASK },
+    bgRemoval: { ...DEFAULT_BG_REMOVAL, pickPoints: [], strokes: [], drawnPolygons: [] },
     effects: { ...DEFAULT_EFFECTS },
     animation: { ...DEFAULT_ANIMATION },
     overlays: [],
+    visualOverlays: [],
   };
 }
 
@@ -237,15 +273,349 @@ export const CLIP_ANIMATION_OPTIONS: { id: ClipAnimationType; label: string }[] 
   { id: 'slide-right', label: 'Whip Right' },
 ];
 
+export const DEFAULT_TEXT_3D: Text3DSettings = {
+  enabled: false,
+  style: 'extrude',
+  depth: 16,
+  angle: 135,
+  tiltX: 0,
+  tiltY: 0,
+  extrudeColor: '#b45309',
+  bevel: 60,
+  extrudeShading: 70,
+  gradientColor2: '#f59e0b',
+  gradientAngle: 180,
+  innerShadowDepth: 0,
+  innerShadowColor: '#09090b',
+  outlineWidth: 0,
+  outlineColor: '#09090b',
+  glowIntensity: 0,
+  glowColor: '#38bdf8',
+  dropShadowEnabled: true,
+  dropShadowColor: '#000000',
+  dropShadowBlur: 14,
+  dropShadowAngle: 90,
+  dropShadowDistance: 6,
+  shadow2Enabled: false,
+  shadow2Color: '#ef4444',
+  shadow2Blur: 0,
+  shadow2Angle: 45,
+  shadow2Distance: 14,
+  layerCount: 1,
+  layerOffsetX: 6,
+  layerOffsetY: 6,
+  layer2Color: '#f59e0b',
+  layer3Color: '#38bdf8',
+  layerStrokeOnly: true,
+  scaleX: 1,
+  scaleY: 1,
+  skewX: 0,
+  skewY: 0,
+  perspective: 0,
+  lineHeight: 1.12,
+  align: 'center',
+  charStyles: {},
+  charAnimation: 'none',
+  charAnimSpeed: 1,
+  charAnimStagger: 55,
+};
+
+export function normalizeTextEffects(value?: Partial<Text3DSettings>): Text3DSettings {
+  return {
+    ...DEFAULT_TEXT_3D,
+    ...(value || {}),
+    charStyles: value?.charStyles ? { ...value.charStyles } : {},
+  };
+}
+
+export const TEXT_3D_STYLE_OPTIONS: {
+  id: Exclude<Text3DStyleId, 'none'>;
+  label: string;
+  defaultColor?: string;
+  defaultGradient2?: string;
+  defaultExtrude: string;
+  defaultDepth: number;
+  defaultBevel: number;
+  defaultOutlineWidth?: number;
+  defaultOutlineColor?: string;
+  defaultGlow?: number;
+  defaultGlowColor?: string;
+  defaultInnerShadow?: number;
+}[] = [
+  {
+    id: 'extrude',
+    label: 'Solid 3D',
+    defaultExtrude: '#b45309',
+    defaultDepth: 18,
+    defaultBevel: 65,
+  },
+  {
+    id: 'gradient',
+    label: 'Gradient',
+    defaultColor: '#ffffff',
+    defaultGradient2: '#f59e0b',
+    defaultExtrude: '#78350f',
+    defaultDepth: 14,
+    defaultBevel: 55,
+  },
+  {
+    id: 'metallic',
+    label: 'Metallic',
+    defaultColor: '#fef3c7',
+    defaultExtrude: '#78350f',
+    defaultDepth: 20,
+    defaultBevel: 85,
+    defaultInnerShadow: 6,
+  },
+  {
+    id: 'chrome-bevel',
+    label: 'Chrome',
+    defaultColor: '#f8fafc',
+    defaultExtrude: '#334155',
+    defaultDepth: 18,
+    defaultBevel: 95,
+    defaultOutlineWidth: 2,
+    defaultOutlineColor: '#0f172a',
+    defaultInnerShadow: 5,
+  },
+  {
+    id: 'glass',
+    label: 'Glass / Gloss',
+    defaultColor: '#e0f2fe',
+    defaultExtrude: '#0369a1',
+    defaultDepth: 10,
+    defaultBevel: 95,
+    defaultOutlineWidth: 2,
+    defaultOutlineColor: '#ffffff',
+    defaultGlow: 28,
+    defaultGlowColor: '#7dd3fc',
+    defaultInnerShadow: 7,
+  },
+  {
+    id: 'neon-3d',
+    label: 'Neon Glow',
+    defaultColor: '#38bdf8',
+    defaultExtrude: '#0369a1',
+    defaultDepth: 12,
+    defaultBevel: 65,
+    defaultGlow: 85,
+    defaultGlowColor: '#38bdf8',
+  },
+  {
+    id: 'emboss',
+    label: 'Emboss',
+    defaultColor: '#e4e4e7',
+    defaultExtrude: '#27272a',
+    defaultDepth: 8,
+    defaultBevel: 100,
+    defaultInnerShadow: 10,
+  },
+  {
+    id: 'retro-pop',
+    label: 'Anime Pop',
+    defaultColor: '#fef08a',
+    defaultExtrude: '#dc2626',
+    defaultDepth: 20,
+    defaultBevel: 45,
+    defaultOutlineWidth: 4,
+    defaultOutlineColor: '#09090b',
+  },
+];
+
 export const TEXT_STYLE_TEMPLATES: {
-  id: 'clean' | 'bold-kinetic' | 'cinema-sub' | 'lower-third' | 'amber-tag';
+  id: TextStyleTemplateId;
   name: string;
   preview: string;
   fontFamily: FontFamilyId;
   fontSize: number;
   color: string;
   backdrop: boolean;
+  text3d?: Text3DSettings;
 }[] = [
+  {
+    id: 'cinema-3d',
+    name: 'Cinema 3D',
+    preview: 'BEYOND 3D',
+    fontFamily: 'oswald',
+    fontSize: 68,
+    color: '#ffffff',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'extrude',
+      depth: 22,
+      angle: 135,
+      tiltX: -6,
+      tiltY: 12,
+      extrudeColor: '#d97706',
+      bevel: 75,
+      outlineWidth: 2,
+      outlineColor: '#09090b',
+    },
+  },
+  {
+    id: 'anime-impact',
+    name: 'Anime Impact',
+    preview: 'SHONEN',
+    fontFamily: 'oswald',
+    fontSize: 74,
+    color: '#fef08a',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'retro-pop',
+      depth: 20,
+      angle: 128,
+      skewX: -12,
+      perspective: 18,
+      extrudeColor: '#dc2626',
+      outlineWidth: 5,
+      outlineColor: '#09090b',
+      shadow2Enabled: true,
+      shadow2Color: '#38bdf8',
+      shadow2Angle: -35,
+      shadow2Distance: 10,
+      shadow2Blur: 0,
+      bevel: 55,
+    },
+  },
+  {
+    id: 'chrome-metal',
+    name: 'Chrome Metal',
+    preview: 'VELOCITY',
+    fontFamily: 'syne',
+    fontSize: 62,
+    color: '#f8fafc',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'chrome-bevel',
+      depth: 18,
+      angle: 130,
+      extrudeColor: '#334155',
+      bevel: 95,
+      innerShadowDepth: 6,
+      innerShadowColor: '#0f172a',
+      outlineWidth: 2,
+      outlineColor: '#09090b',
+      glowIntensity: 20,
+      glowColor: '#e2e8f0',
+    },
+  },
+  {
+    id: 'glass-gloss',
+    name: 'Crystal Glass',
+    preview: 'CRYSTAL',
+    fontFamily: 'syne',
+    fontSize: 64,
+    color: '#e0f2fe',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'glass',
+      depth: 10,
+      angle: 135,
+      extrudeColor: '#0284c7',
+      bevel: 95,
+      innerShadowDepth: 8,
+      innerShadowColor: '#0369a1',
+      outlineWidth: 2,
+      outlineColor: '#ffffff',
+      glowIntensity: 35,
+      glowColor: '#7dd3fc',
+    },
+  },
+  {
+    id: 'neon-cyber',
+    name: 'Neon Glow',
+    preview: 'NIGHTLINE',
+    fontFamily: 'oswald',
+    fontSize: 64,
+    color: '#38bdf8',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'neon-3d',
+      depth: 12,
+      angle: 135,
+      extrudeColor: '#0369a1',
+      bevel: 60,
+      glowIntensity: 90,
+      glowColor: '#38bdf8',
+      outlineWidth: 2,
+      outlineColor: '#bae6fd',
+    },
+  },
+  {
+    id: 'triple-layer',
+    name: 'Triple Echo',
+    preview: 'MOTION',
+    fontFamily: 'oswald',
+    fontSize: 68,
+    color: '#ffffff',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'extrude',
+      depth: 0,
+      layerCount: 3,
+      layerOffsetX: 8,
+      layerOffsetY: 8,
+      layer2Color: '#f59e0b',
+      layer3Color: '#38bdf8',
+      layerStrokeOnly: true,
+      outlineWidth: 3,
+      outlineColor: '#09090b',
+    },
+  },
+  {
+    id: 'gold-emboss',
+    name: 'Gold Emboss',
+    preview: 'PRESTIGE',
+    fontFamily: 'serif',
+    fontSize: 60,
+    color: '#fef3c7',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'metallic',
+      depth: 16,
+      angle: 135,
+      extrudeColor: '#78350f',
+      bevel: 95,
+      innerShadowDepth: 8,
+      innerShadowColor: '#451a03',
+    },
+  },
+  {
+    id: 'gradient-punch',
+    name: 'Sunset Grad',
+    preview: 'HORIZON',
+    fontFamily: 'syne',
+    fontSize: 60,
+    color: '#ffffff',
+    backdrop: false,
+    text3d: {
+      ...DEFAULT_TEXT_3D,
+      enabled: true,
+      style: 'gradient',
+      gradientColor2: '#f97316',
+      gradientAngle: 165,
+      depth: 14,
+      angle: 135,
+      extrudeColor: '#7c2d12',
+      bevel: 70,
+      outlineWidth: 2,
+      outlineColor: '#09090b',
+    },
+  },
   {
     id: 'bold-kinetic',
     name: 'Oswald Impact',
@@ -300,6 +670,104 @@ export const STICKER_OPTIONS: { id: StickerKind; label: string; desc: string }[]
   { id: 'timecode-hud', label: 'Timecode HUD', desc: 'Live running timecode overlay' },
   { id: 'arrow-accent', label: 'Callout Arrow', desc: 'Hand-styled pointer arrow' },
   { id: 'star-badge', label: 'Sparkle Star', desc: 'Crisp vector four-point star' },
+];
+
+export const OVERLAY_BLEND_MODES: { id: OverlayBlendMode; label: string }[] = [
+  { id: 'normal', label: 'Normal' },
+  { id: 'screen', label: 'Screen' },
+  { id: 'color-dodge', label: 'Add Glow' },
+  { id: 'overlay', label: 'Overlay' },
+  { id: 'soft-light', label: 'Soft Light' },
+  { id: 'multiply', label: 'Multiply' },
+  { id: 'difference', label: 'Difference' },
+];
+
+export const MIRROR_TILE_OPTIONS: { id: MirrorTileMode; label: string }[] = [
+  { id: 'none', label: 'Off' },
+  { id: 'mirror-h', label: 'Half Mirror' },
+  { id: 'quad', label: 'Quad Kaleid' },
+];
+
+export const DUOTONE_MAP_OPTIONS: { id: DuotoneMapId; label: string; accent: string }[] = [
+  { id: 'none', label: 'Original', accent: '#71717a' },
+  { id: 'cyber', label: 'Cyber Neon', accent: '#38bdf8' },
+  { id: 'thermal', label: 'Thermal', accent: '#f97316' },
+  { id: 'crimson', label: 'Crimson Noir', accent: '#ef4444' },
+  { id: 'noir-gold', label: 'Gold Matte', accent: '#f59e0b' },
+];
+
+export const VISUAL_OVERLAY_PRESETS: {
+  id: VisualOverlayPresetId;
+  name: string;
+  desc: string;
+  defaultBlend: OverlayBlendMode;
+  defaultOpacity: number;
+  previewCss: string;
+}[] = [
+  {
+    id: 'warm-light-leak',
+    name: 'Warm Light Leak',
+    desc: 'Anamorphic amber & crimson edge burn',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.78,
+    previewCss: 'radial-gradient(circle at 18% 35%, rgba(251,146,60,0.85), rgba(239,68,68,0.45) 45%, transparent 78%)',
+  },
+  {
+    id: 'prism-flare',
+    name: 'Prism Lens Flare',
+    desc: 'Spectral diagonal streak & optical ghosts',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.75,
+    previewCss: 'linear-gradient(125deg, transparent 20%, rgba(56,189,248,0.65) 45%, rgba(251,191,36,0.8) 54%, rgba(244,114,182,0.5) 64%, transparent 82%)',
+  },
+  {
+    id: 'film-dust',
+    name: '35mm Dust & Scratches',
+    desc: 'Emulsion specks, gate hairs & fine lines',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.72,
+    previewCss: 'radial-gradient(circle at 30% 40%, rgba(255,255,255,0.55) 1px, transparent 2px), radial-gradient(circle at 72% 65%, rgba(255,255,255,0.45) 1px, transparent 2px), linear-gradient(90deg, transparent 48%, rgba(255,255,255,0.22) 49%, transparent 50%)',
+  },
+  {
+    id: 'bokeh-glow',
+    name: 'Soft Bokeh Glow',
+    desc: 'Floating warm & cyan out-of-focus orbs',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.74,
+    previewCss: 'radial-gradient(circle at 28% 58%, rgba(251,191,36,0.7) 0%, transparent 28%), radial-gradient(circle at 72% 38%, rgba(56,189,248,0.65) 0%, transparent 30%)',
+  },
+  {
+    id: 'cinema-rain',
+    name: 'Cinema Rain Streaks',
+    desc: 'Angled backlit night rain atmosphere',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.68,
+    previewCss: 'repeating-linear-gradient(108deg, transparent 0px, transparent 9px, rgba(186,230,253,0.45) 10px, transparent 11px)',
+  },
+  {
+    id: 'vhs-static',
+    name: 'VHS Tape Static',
+    desc: 'Tracking bands & analog snow interference',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.62,
+    previewCss: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.16) 0px, transparent 2px, rgba(56,189,248,0.18) 3px, transparent 6px)',
+  },
+  {
+    id: 'frost-frame',
+    name: 'Frost Edge Glow',
+    desc: 'Luminous ice mist border vignette',
+    defaultBlend: 'screen',
+    defaultOpacity: 0.72,
+    previewCss: 'radial-gradient(circle at 50% 50%, transparent 45%, rgba(186,230,253,0.65) 100%)',
+  },
+  {
+    id: 'editorial-frame',
+    name: '35mm Film Frame',
+    desc: 'Sprocket matte border & frame notch',
+    defaultBlend: 'normal',
+    defaultOpacity: 0.92,
+    previewCss: 'linear-gradient(90deg, rgba(245,158,11,0.5) 0 8%, transparent 8% 92%, rgba(245,158,11,0.5) 92% 100%)',
+  },
 ];
 
 export const FILM_PRESETS: FilmPreset[] = [

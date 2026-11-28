@@ -24,6 +24,7 @@ interface ExportModalProps {
   projectName: string;
   activeAsset: MediaAsset | null;
   activeEdits: EditDocument;
+  assets: MediaAsset[];
   sourceMap: Record<string, HTMLImageElement | HTMLVideoElement>;
   clips: TimelineClip[];
   selectedClip: TimelineClip | null;
@@ -46,6 +47,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   projectName,
   activeAsset,
   activeEdits,
+  assets,
   sourceMap,
   clips,
   selectedClip,
@@ -78,6 +80,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setTargetAspect(sequenceAspect);
+      if (
+        workspace === 'photo' &&
+        activeEdits.bgRemoval?.enabled &&
+        activeEdits.bgRemoval.backdropMode === 'transparent'
+      ) {
+        setPhotoFormat('image/png');
+      }
       if (!isAuthenticated) {
         setVideoScale('720p');
         setPhotoMaxEdge(1200);
@@ -94,7 +103,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         setExportScope('full-timeline');
       }
     }
-  }, [isOpen, isAuthenticated, sequenceAspect, projectName, activeAsset, selectedClip, exportScope]);
+  }, [
+    isOpen,
+    isAuthenticated,
+    sequenceAspect,
+    projectName,
+    activeAsset,
+    selectedClip,
+    exportScope,
+    workspace,
+    activeEdits.bgRemoval,
+  ]);
 
   const clipsToRender = useMemo(() => {
     if (exportScope === 'selected-clip' && selectedClip) {
@@ -103,12 +122,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     return clips;
   }, [exportScope, selectedClip, clips]);
 
+  const maxOverlayEnd = useMemo(() => {
+    if (globalOverlays.length === 0) return 0;
+    return Math.max(0, ...globalOverlays.map((o) => o.startTime + o.duration));
+  }, [globalOverlays]);
+
   const effectiveExportDuration = useMemo(() => {
-    return clipsToRender.reduce(
+    const clipsDur = clipsToRender.reduce(
       (sum, c) => sum + Math.max(0.15, (c.trimEnd - c.trimStart) / c.speed),
       0
     );
-  }, [clipsToRender]);
+    if (exportScope === 'full-timeline') {
+      return Math.max(clipsDur, maxOverlayEnd);
+    }
+    return clipsDur;
+  }, [clipsToRender, exportScope, maxOverlayEnd]);
 
   if (!isOpen) return null;
 
@@ -116,7 +144,42 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const safeBaseName =
     fileName.trim().replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || 'kinoframe-export';
 
-  const handleStillExport = () => {
+  const loadExportOverlayVideos = async (overlaysToLoad: TimelineOverlayItem[]) => {
+    const map: Record<string, HTMLVideoElement> = {};
+    const videoOverlays = overlaysToLoad.filter((o) => o.kind === 'video');
+    await Promise.all(
+      videoOverlays.map(async (ov) => {
+        const asset = ov.overlayAssetId
+          ? assets.find((a) => a.id === ov.overlayAssetId)
+          : undefined;
+        const srcUrl = ov.overlaySrc || asset?.src;
+        if (!srcUrl) return;
+        const vid = document.createElement('video');
+        vid.crossOrigin = 'anonymous';
+        vid.muted = true;
+        vid.playsInline = true;
+        vid.preload = 'auto';
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, 2500);
+          vid.onloadeddata = () => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+          vid.onerror = () => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+          vid.src = srcUrl;
+        });
+        map[ov.id] = vid;
+      })
+    );
+    return map;
+  };
+
+  const handleStillExport = async () => {
+    const hasOverlayOnlyTimeline =
+      workspace === 'timeline' && clips.length === 0 && globalOverlays.length > 0;
     const assetForStill =
       workspace === 'photo'
         ? activeAsset
@@ -126,23 +189,25 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             ? { id: clips[0].assetId, name: clips[0].name }
             : activeAsset;
 
-    if (!assetForStill) {
+    if (!assetForStill && !hasOverlayOnlyTimeline) {
       setErrorMessage('No frame or photo available to export.');
       return;
     }
 
-    const source = sourceMap[assetForStill.id];
-    if (!source) {
+    const source = assetForStill ? sourceMap[assetForStill.id] || null : null;
+    if (!source && !hasOverlayOnlyTimeline) {
       setErrorMessage('Source media is still loading or missing.');
       return;
     }
 
     setErrorMessage(null);
-    const { w, h } = getSourceDimensions(source);
     const ratioOverride =
       workspace === 'timeline'
-        ? ASPECT_RATIO_OPTIONS.find((r) => r.id === targetAspect)?.ratio ?? undefined
+        ? ASPECT_RATIO_OPTIONS.find((r) => r.id === targetAspect)?.ratio ?? 16 / 9
         : undefined;
+    const { w, h } = source
+      ? getSourceDimensions(source)
+      : { w: ratioOverride && ratioOverride < 1 ? 1080 : 1920, h: ratioOverride && ratioOverride < 1 ? 1920 : 1080 };
     const maxEdge = photoMaxEdge === 0 ? Math.max(w, h) : photoMaxEdge;
     const dims = computeTargetDimensions(w, h, activeEdits, maxEdge, ratioOverride);
 
@@ -150,10 +215,42 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     offscreen.width = dims.width;
     offscreen.height = dims.height;
 
+    const overlayVideos =
+      workspace === 'timeline' ? await loadExportOverlayVideos(globalOverlays) : {};
+    if (workspace === 'timeline') {
+      await Promise.all(
+        globalOverlays.map(async (ov) => {
+          const v = overlayVideos[ov.id];
+          if (!v) return;
+          const localT = clamp(
+            (ov.sourceTrimStart || 0) + (playhead - ov.startTime) * (ov.sourceSpeed || 1),
+            0,
+            v.duration || ov.sourceDuration || 10
+          );
+          if (Math.abs(v.currentTime - localT) > 0.04) {
+            await new Promise<void>((resolve) => {
+              const timer = window.setTimeout(resolve, 600);
+              v.onseeked = () => {
+                window.clearTimeout(timer);
+                resolve();
+              };
+              v.currentTime = localT;
+            });
+          }
+        })
+      );
+    }
+
     renderFrameToCanvas(offscreen, source, {
       edits: activeEdits,
       globalTime: playhead,
       globalOverlays: workspace === 'timeline' ? globalOverlays : [],
+      overlayVideos,
+      showDrawnGuide: false,
+    });
+
+    Object.values(overlayVideos).forEach((v) => {
+      v.src = '';
     });
 
     const ext =
@@ -168,8 +265,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   };
 
   const handleVideoExport = async () => {
-    if (clipsToRender.length === 0) {
-      setErrorMessage('Add at least one clip to the timeline before exporting video.');
+    const hasOverlayOnly = exportScope === 'full-timeline' && globalOverlays.length > 0;
+    if (clipsToRender.length === 0 && !hasOverlayOnly) {
+      setErrorMessage('Add at least one clip or overlay to the timeline before exporting video.');
       return;
     }
 
@@ -185,6 +283,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
     let audioCtx: AudioContext | null = null;
     const activeSources: AudioBufferSourceNode[] = [];
+    let overlayVideosMap: Record<string, HTMLVideoElement> = {};
 
     try {
       const ratioObj = ASPECT_RATIO_OPTIONS.find((r) => r.id === targetAspect);
@@ -198,6 +297,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const offscreen = document.createElement('canvas');
       offscreen.width = width;
       offscreen.height = height;
+
+      if (exportScope === 'full-timeline') {
+        overlayVideosMap = await loadExportOverlayVideos(globalOverlays);
+      }
 
       const videoStream = offscreen.captureStream(30);
       const combinedTracks: MediaStreamTrack[] = [...videoStream.getVideoTracks()];
@@ -305,41 +408,69 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           setProgress(Math.min(99, Math.round((elapsedSec / renderDur) * 100)));
 
           const activeSpan =
-            spans.find((s) => elapsedSec >= s.start && elapsedSec < s.start + s.len) ||
-            spans[spans.length - 1];
+            spans.length > 0
+              ? spans.find((s) => elapsedSec >= s.start && elapsedSec < s.start + s.len) ||
+                spans[spans.length - 1]
+              : null;
 
-          if (activeSpan) {
-            const src = sourceMap[activeSpan.clip.assetId];
-            if (src) {
-              const localElapsed = elapsedSec - activeSpan.start;
-              const progress01 = clamp(localElapsed / activeSpan.len, 0, 1);
-
-              if (src instanceof HTMLVideoElement) {
-                const targetVideoTime = clamp(
-                  activeSpan.clip.trimStart + localElapsed * activeSpan.clip.speed,
+          if (exportScope === 'full-timeline') {
+            for (const ov of globalOverlays) {
+              if (ov.kind !== 'video') continue;
+              const ovVid = overlayVideosMap[ov.id];
+              if (!ovVid) continue;
+              if (elapsedSec >= ov.startTime && elapsedSec <= ov.startTime + ov.duration) {
+                const targetOvTime = clamp(
+                  (ov.sourceTrimStart || 0) + (elapsedSec - ov.startTime) * (ov.sourceSpeed || 1),
                   0,
-                  src.duration || 10
+                  ovVid.duration || ov.sourceDuration || 10
                 );
-                if (Math.abs(src.currentTime - targetVideoTime) > 0.08) {
-                  src.currentTime = targetVideoTime;
+                if (Math.abs(ovVid.currentTime - targetOvTime) > 0.08) {
+                  ovVid.currentTime = targetOvTime;
                 }
               }
-
-              renderFrameToCanvas(offscreen, src, {
-                edits: activeSpan.clip.edits,
-                clipProgress: progress01,
-                clipTime: localElapsed,
-                clipDuration: activeSpan.len,
-                globalTime: elapsedSec,
-                enableKenBurns: true,
-                transitionIn: activeSpan.clip.transitionIn,
-                transitionDuration: activeSpan.clip.transitionDuration,
-                velocityPreset: activeSpan.clip.velocityPreset,
-                clipKeyframes: activeSpan.clip.keyframes,
-                clipKeyframeEasing: activeSpan.clip.keyframeEasing,
-                globalOverlays: exportScope === 'full-timeline' ? globalOverlays : [],
-              });
             }
+          }
+
+          if (activeSpan) {
+            const src = sourceMap[activeSpan.clip.assetId] || null;
+            const localElapsed = elapsedSec - activeSpan.start;
+            const progress01 = clamp(localElapsed / activeSpan.len, 0, 1);
+
+            if (src instanceof HTMLVideoElement) {
+              const targetVideoTime = clamp(
+                activeSpan.clip.trimStart + localElapsed * activeSpan.clip.speed,
+                0,
+                src.duration || 10
+              );
+              if (Math.abs(src.currentTime - targetVideoTime) > 0.08) {
+                src.currentTime = targetVideoTime;
+              }
+            }
+
+            renderFrameToCanvas(offscreen, src, {
+              edits: activeSpan.clip.edits,
+              clipProgress: progress01,
+              clipTime: localElapsed,
+              clipDuration: activeSpan.len,
+              globalTime: elapsedSec,
+              enableKenBurns: true,
+              transitionIn: activeSpan.clip.transitionIn,
+              transitionDuration: activeSpan.clip.transitionDuration,
+              velocityPreset: activeSpan.clip.velocityPreset,
+              clipKeyframes: activeSpan.clip.keyframes,
+              clipKeyframeEasing: activeSpan.clip.keyframeEasing,
+              globalOverlays: exportScope === 'full-timeline' ? globalOverlays : [],
+              overlayVideos: exportScope === 'full-timeline' ? overlayVideosMap : undefined,
+              showDrawnGuide: false,
+            });
+          } else if (exportScope === 'full-timeline' && globalOverlays.length > 0) {
+            renderFrameToCanvas(offscreen, null, {
+              edits: activeEdits,
+              globalTime: elapsedSec,
+              globalOverlays,
+              overlayVideos: overlayVideosMap,
+              showDrawnGuide: false,
+            });
           }
 
           setTimeout(step, Math.max(8, frameIntervalMs - 2));
@@ -364,6 +495,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         err instanceof Error ? err.message : 'Unable to render video sequence.'
       );
     } finally {
+      Object.values(overlayVideosMap).forEach((v) => {
+        v.src = '';
+      });
       activeSources.forEach((s) => {
         try {
           s.stop();
@@ -424,7 +558,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     <span>Full Edit</span>
                   </div>
                   <p className="text-[10px] font-mono text-zinc-400 mt-1">
-                    {clips.length} clips · {totalDuration.toFixed(1)}s
+                    {clips.length > 0 ? `${clips.length} clips` : `${globalOverlays.length} overlays`} ·{' '}
+                    {totalDuration.toFixed(1)}s
                   </p>
                 </button>
 
@@ -449,7 +584,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
                 <button
                   type="button"
-                  disabled={exporting || clips.length === 0}
+                  disabled={exporting || (clips.length === 0 && globalOverlays.length === 0)}
                   onClick={() => setExportScope('current-frame')}
                   className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                     exportScope === 'current-frame'

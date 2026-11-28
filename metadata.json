@@ -2,5 +2,5 @@
   "name": "KinoFrame",
   "description": "Precision browser-based photo grading and multi-clip video editing studio.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

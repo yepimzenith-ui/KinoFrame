@@ -36,7 +36,7 @@ interface AuthModalProps {
   savedProjectsCount: number;
   authLoading: boolean;
   onGoogleAuth: (preferredName?: string, preferredUsername?: string) => Promise<void>;
-  onEmailSignIn: (email: string, password: string) => Promise<void>;
+  onEmailSignIn: (email: string, password: string) => Promise<boolean>;
   onEmailSignUp: (input: {
     email: string;
     password: string;
@@ -53,8 +53,32 @@ interface AuthModalProps {
   onClose: () => void;
 }
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function isValidEmailFormat(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length >= 3 && trimmed.length <= 160 && EMAIL_REGEX.test(trimmed);
+}
+
 function mapFirebaseAuthError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+
+  if (raw.startsWith('{') && raw.includes('"operationType"')) {
+    try {
+      const parsed = JSON.parse(raw) as { error?: string };
+      const inner = parsed.error || '';
+      if (inner.includes('permission-denied') || inner.includes('Missing or insufficient permissions')) {
+        return 'Cloud profile sync requires a verified email session. Verify your email or sign in again.';
+      }
+      if (inner.includes('offline')) {
+        return 'You appear to be offline. Check your connection and try again.';
+      }
+    } catch {
+      // Fallback below
+    }
+    return 'Unable to sync your studio profile right now. Please try again.';
+  }
+
   if (raw.includes('auth/operation-not-allowed')) {
     return 'Email/Password login is not enabled in Firebase Authentication yet. Enable the Email/Password provider in Firebase Console (Authentication -> Sign-in method).';
   }
@@ -62,11 +86,15 @@ function mapFirebaseAuthError(err: unknown): string {
     return 'An account with this email already exists. Log in instead or reset your password.';
   }
   if (
+    raw.includes('auth/invalid-login-credentials') ||
     raw.includes('auth/invalid-credential') ||
     raw.includes('auth/wrong-password') ||
     raw.includes('auth/user-not-found')
   ) {
     return 'Incorrect email or password. Please check your credentials and try again.';
+  }
+  if (raw.includes('auth/user-disabled')) {
+    return 'This account has been disabled. Please use another account.';
   }
   if (raw.includes('auth/invalid-email')) {
     return 'Please enter a valid email address.';
@@ -74,11 +102,23 @@ function mapFirebaseAuthError(err: unknown): string {
   if (raw.includes('auth/weak-password')) {
     return 'Password must be at least 6 characters long.';
   }
+  if (raw.includes('auth/missing-password')) {
+    return 'Please enter your password.';
+  }
   if (raw.includes('auth/too-many-requests')) {
     return 'Too many attempts. Please wait a moment and try again.';
   }
+  if (raw.includes('auth/network-request-failed')) {
+    return 'Network error while connecting. Check your internet connection and try again.';
+  }
   if (raw.includes('auth/popup-blocked')) {
     return 'Popup was blocked by your browser. Allow popups for this site and try again.';
+  }
+  if (raw.includes('auth/account-exists-with-different-credential')) {
+    return 'An account already exists with this email using a different sign-in method.';
+  }
+  if (raw.includes('auth/expired-action-code') || raw.includes('auth/invalid-action-code')) {
+    return 'This verification or reset link has expired. Please request a new one.';
   }
   if (raw.includes('auth/requires-recent-login')) {
     return 'Please sign out and sign back in to complete this security change.';
@@ -145,11 +185,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setInfoMsg(null);
       setSavedProfileMsg(false);
       setSavedHandleMsg(false);
-      setEditName(studioDisplayName || user?.displayName || '');
-      setEditUsername(studioUsername || '');
       setHandleCheck(null);
+      setPassword('');
+      setConfirmPassword('');
+      setShowPassword(false);
+    } else {
+      setPassword('');
+      setConfirmPassword('');
+      setShowPassword(false);
     }
-  }, [isOpen, initialTab, studioDisplayName, studioUsername, user]);
+  }, [isOpen, initialTab]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setEditName(studioDisplayName || user?.displayName || '');
+    setEditUsername(studioUsername || '');
+  }, [isOpen, studioDisplayName, studioUsername, user]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !submitting) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, submitting, onClose]);
 
   // Debounced username availability check for Sign Up or Verified Profile username editor
   const activeHandleInput = user && user.emailVerified ? editUsername : tab === 'signup' ? signupUsername : '';
@@ -236,7 +298,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       onClose();
     } catch (err) {
       const raw = err instanceof Error ? err.message : '';
-      if (!raw.includes('popup-closed-by-user')) {
+      if (!raw.includes('popup-closed-by-user') && !raw.includes('cancelled-popup-request')) {
         setErrorMsg(mapFirebaseAuthError(err));
       }
     } finally {
@@ -249,10 +311,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMsg(null);
     setInfoMsg(null);
 
+    const cleanEmail = email.trim();
+
     if (resetMode) {
-      const cleanEmail = email.trim();
-      if (!cleanEmail) {
-        setErrorMsg('Enter your account email to receive a password reset link.');
+      if (!isValidEmailFormat(cleanEmail)) {
+        setErrorMsg('Enter a valid account email to receive a password reset link.');
         return;
       }
       setSubmitting(true);
@@ -268,16 +331,28 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
-    if (!email.trim() || !password) {
+    if (!cleanEmail || !password) {
       setErrorMsg('Enter both your email and password.');
+      return;
+    }
+    if (!isValidEmailFormat(cleanEmail)) {
+      setErrorMsg('Please enter a valid email address.');
+      return;
+    }
+    if (!password.trim()) {
+      setErrorMsg('Password cannot be blank.');
       return;
     }
 
     setSubmitting(true);
     try {
-      await onEmailSignIn(email.trim(), password);
+      const verified = await onEmailSignIn(cleanEmail, password);
       setPassword('');
-      onClose();
+      if (verified) {
+        onClose();
+      } else {
+        setInfoMsg('Verify the link sent to your email, then press "I\'ve Verified — Activate Account".');
+      }
     } catch (err) {
       setErrorMsg(mapFirebaseAuthError(err));
     } finally {
@@ -295,12 +370,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMsg(format.error || 'Choose a valid username (3–24 chars).');
       return;
     }
-    if (!email.trim()) {
+    const cleanEmail = email.trim();
+    if (!isValidEmailFormat(cleanEmail)) {
       setErrorMsg('Enter a valid email address.');
+      return;
+    }
+    if (!password || !password.trim()) {
+      setErrorMsg('Password cannot be blank or spaces only.');
       return;
     }
     if (password.length < 6) {
       setErrorMsg('Password must be at least 6 characters.');
+      return;
+    }
+    if (password.length > 128) {
+      setErrorMsg('Password must be 128 characters or fewer.');
       return;
     }
     if (password !== confirmPassword) {
@@ -319,7 +403,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       await onEmailSignUp({
-        email: email.trim(),
+        email: cleanEmail,
         password,
         username: availability.normalized,
         displayName: creatorName.trim() || undefined,
@@ -328,7 +412,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setPassword('');
       setConfirmPassword('');
       setInfoMsg(
-        `Verification link sent to ${email.trim()}. Verify your email to activate @${availability.normalized}.`
+        `Verification link sent to ${cleanEmail}. Verify your email to activate @${availability.normalized}.`
       );
     } catch (err) {
       setErrorMsg(mapFirebaseAuthError(err));
@@ -783,6 +867,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setResetMode(false);
                       setErrorMsg(null);
                       setInfoMsg(null);
+                      setPassword('');
+                      setConfirmPassword('');
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 text-xs font-medium rounded transition-colors cursor-pointer ${
                       tab === 'login'
@@ -800,6 +886,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setResetMode(false);
                       setErrorMsg(null);
                       setInfoMsg(null);
+                      setPassword('');
+                      setConfirmPassword('');
                     }}
                     className={`flex items-center justify-center gap-1.5 py-2 text-xs font-medium rounded transition-colors cursor-pointer ${
                       tab === 'signup'
@@ -813,7 +901,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
 
                 {tab === 'login' ? (
-                  <form onSubmit={handleEmailLoginSubmit} className="space-y-3">
+                  <form noValidate onSubmit={handleEmailLoginSubmit} className="space-y-3">
                     <div className="space-y-1">
                       <label htmlFor="login-email" className="block text-xs font-medium text-zinc-300">
                         Email
@@ -901,7 +989,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     </div>
                   </form>
                 ) : (
-                  <form onSubmit={handleEmailSignupSubmit} className="space-y-3">
+                  <form noValidate onSubmit={handleEmailSignupSubmit} className="space-y-3">
                     <div className="space-y-1">
                       <label htmlFor="signup-username" className="block text-xs font-medium text-zinc-300">
                         Unique Username
@@ -1084,6 +1172,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     setResetMode(false);
                     setErrorMsg(null);
                     setInfoMsg(null);
+                    setPassword('');
+                    setConfirmPassword('');
                   }}
                   className="text-amber-400 hover:text-amber-300 font-medium cursor-pointer"
                 >

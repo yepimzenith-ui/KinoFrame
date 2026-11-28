@@ -5,6 +5,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Layers,
+  Magnet,
   Pause,
   Play,
   Scissors,
@@ -48,8 +50,10 @@ interface TimelineProps {
   onStepFrame: (delta: number) => void;
   onSplitAtPlayhead: () => void;
   onDuplicateSelectedClip: () => void;
+  onConvertClipToOverlay: (clipId: string) => void;
   onDeleteSelected: () => void;
   onMoveClip: (clipId: string, dir: -1 | 1) => void;
+  onReorderClip: (fromIndex: number, toIndex: number) => void;
   onUpdateClip: (clipId: string, patch: Partial<TimelineClip>) => void;
   onUpdateOverlay: (id: string, patch: Partial<TimelineOverlayItem>) => void;
   onUpdateAudioClip: (id: string, patch: Partial<AudioClip>) => void;
@@ -78,14 +82,20 @@ export const Timeline: React.FC<TimelineProps> = ({
   onStepFrame,
   onSplitAtPlayhead,
   onDuplicateSelectedClip,
+  onConvertClipToOverlay,
   onDeleteSelected,
   onMoveClip,
+  onReorderClip,
   onUpdateClip,
   onUpdateOverlay,
   onUpdateAudioClip,
 }) => {
+  const TRACK_LABEL_WIDTH = 56;
   const [pxPerSec, setPxPerSec] = useState<number>(84);
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(true);
   const [openTransClipId, setOpenTransClipId] = useState<string | null>(null);
+  const [snapLineSec, setSnapLineSec] = useState<number | null>(null);
+  const [dragHud, setDragHud] = useState<{ xPx: number; label: string } | null>(null);
   const [skim, setSkim] = useState<{
     time: number;
     xPx: number;
@@ -107,26 +117,8 @@ export const Timeline: React.FC<TimelineProps> = ({
     const el = trackRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
-    const x = clientX - rect.left + el.scrollLeft - 48;
+    const x = clientX - rect.left + el.scrollLeft - TRACK_LABEL_WIDTH;
     return clamp(x / pxPerSec, 0, Math.max(0.05, totalDuration));
-  };
-
-  const startScrub = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    isScrubbingRef.current = true;
-    onSeek(computeTimeFromClientX(e.clientX));
-    const onMove = (ev: PointerEvent) => {
-      onSeek(computeTimeFromClientX(ev.clientX));
-    };
-    const onUp = () => {
-      isScrubbingRef.current = false;
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
   };
 
   const getClipEffectiveLength = (clip: TimelineClip) =>
@@ -153,6 +145,66 @@ export const Timeline: React.FC<TimelineProps> = ({
       beatMarkers.push(Number(bt.toFixed(3)));
     }
   }
+
+  const snapTime = (rawTime: number, includePlayhead = true): { time: number; snappedTo: number | null } => {
+    if (!snapEnabled) {
+      return { time: Number(Math.max(0, rawTime).toFixed(2)), snappedTo: null };
+    }
+    const thresholdSec = Math.max(0.12, 10 / pxPerSec);
+    const targets: number[] = [0];
+    if (includePlayhead) targets.push(playhead);
+    for (const s of clipSpans) {
+      targets.push(s.start, s.start + s.len);
+    }
+    for (const ov of globalOverlays) {
+      targets.push(ov.startTime, ov.startTime + ov.duration);
+    }
+    for (const b of beatMarkers) {
+      targets.push(b);
+    }
+    let best = rawTime;
+    let bestDist = thresholdSec;
+    let snappedTo: number | null = null;
+    for (const target of targets) {
+      const dist = Math.abs(rawTime - target);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = target;
+        snappedTo = target;
+      }
+    }
+    return { time: Number(Math.max(0, best).toFixed(2)), snappedTo };
+  };
+
+  const startScrub = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    const targetEl = e.currentTarget as HTMLElement;
+    try {
+      targetEl.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore if synthetic event
+    }
+    isScrubbingRef.current = true;
+    setSkim(null);
+    const first = snapTime(computeTimeFromClientX(e.clientX), false);
+    setSnapLineSec(first.snappedTo);
+    onSeek(clamp(first.time, 0, Math.max(0.05, totalDuration)));
+    const onMove = (ev: PointerEvent) => {
+      const next = snapTime(computeTimeFromClientX(ev.clientX), false);
+      setSnapLineSec(next.snappedTo);
+      onSeek(clamp(next.time, 0, Math.max(0.05, totalDuration)));
+    };
+    const onUp = () => {
+      isScrubbingRef.current = false;
+      setSnapLineSec(null);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
 
   const skimmedSpan =
     skim && clipSpans.length > 0
@@ -329,9 +381,20 @@ export const Timeline: React.FC<TimelineProps> = ({
             onClick={onDuplicateSelectedClip}
             disabled={!selectedClip}
             title="Duplicate selected clip"
-            className="flex items-center gap-1 px-2 py-1 rounded border border-zinc-800 bg-zinc-900 text-[11px] font-medium text-zinc-200 hover:border-zinc-600 disabled:opacity-40 cursor-pointer whitespace-nowrap"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-zinc-800 bg-zinc-900 text-[11px] font-medium text-zinc-200 hover:border-zinc-600 disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
           >
             <Copy className="w-3 h-3" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => selectedClip && onConvertClipToOverlay(selectedClip.id)}
+            disabled={!selectedClip}
+            title="Turn selected clip into Track T1 PiP Overlay (CapCut style)"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-violet-500/40 bg-violet-500/15 text-[11px] font-medium text-violet-200 hover:bg-violet-500 hover:text-zinc-950 disabled:opacity-40 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Layers className="w-3 h-3" />
+            <span>→ Overlay</span>
           </button>
 
           <button
@@ -339,7 +402,7 @@ export const Timeline: React.FC<TimelineProps> = ({
             onClick={onDeleteSelected}
             disabled={!selectedClip && !selectedOverlayId && !selectedAudioId}
             title="Delete selected item (Del)"
-            className="p-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-red-400 hover:border-red-900/60 disabled:opacity-40 cursor-pointer"
+            className="p-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-red-400 hover:border-red-900/60 disabled:opacity-40 cursor-pointer shrink-0"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -398,7 +461,21 @@ export const Timeline: React.FC<TimelineProps> = ({
           </div>
         )}
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setSnapEnabled((s) => !s)}
+            title="Magnetic Timeline Snap"
+            className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              snapEnabled
+                ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+                : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:text-zinc-200'
+            }`}
+          >
+            <Magnet className="w-3 h-3" />
+            <span>Snap</span>
+          </button>
+
           <select
             value={beatBpm}
             onChange={(e) => onChangeBeatBpm(Number(e.target.value))}
@@ -426,15 +503,32 @@ export const Timeline: React.FC<TimelineProps> = ({
 
       <div
         ref={trackRef}
+        onWheel={(e) => {
+          const el = trackRef.current;
+          if (!el) return;
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setPxPerSec((prev) => clamp(Math.round(prev - e.deltaY * 0.25), 44, 240));
+            return;
+          }
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && el.scrollWidth > el.clientWidth) {
+            el.scrollLeft += e.deltaY;
+          }
+        }}
         onPointerMove={(e) => {
-          if (e.pointerType === 'touch' || isScrubbingRef.current || totalDuration <= 0) {
+          if (
+            e.pointerType === 'touch' ||
+            isScrubbingRef.current ||
+            dragHud !== null ||
+            totalDuration <= 0
+          ) {
             return;
           }
           const el = trackRef.current;
           const secEl = sectionRef.current;
           if (!el || !secEl) return;
           const rect = el.getBoundingClientRect();
-          const relX = e.clientX - rect.left + el.scrollLeft - 48;
+          const relX = e.clientX - rect.left + el.scrollLeft - TRACK_LABEL_WIDTH;
           if (relX < 0) {
             setSkim(null);
             return;
@@ -451,16 +545,16 @@ export const Timeline: React.FC<TimelineProps> = ({
         className="flex-1 overflow-x-auto overflow-y-auto studio-scroll relative bg-[#0c0c0f] select-none"
       >
         <div style={{ width: `${timelineWidth}px` }} className="min-h-full relative flex">
-          <div className="w-12 shrink-0 sticky left-0 z-30 bg-zinc-950 border-r border-zinc-800 flex flex-col">
+          <div className="w-14 shrink-0 sticky left-0 z-30 bg-zinc-950 border-r border-zinc-800 flex flex-col">
             <div className="h-7 sm:h-6 border-b border-zinc-800" />
-            <div className="h-10 border-b border-zinc-800/60 flex items-center justify-center text-[10px] font-mono text-sky-400">
-              T1
+            <div className="h-10 border-b border-zinc-800/60 flex items-center justify-center text-[10px] font-medium text-sky-400 tracking-tight">
+              Overlay
             </div>
-            <div className="h-16 sm:h-20 border-b border-zinc-800/60 flex items-center justify-center text-[10px] font-mono text-amber-400">
-              V1
+            <div className="h-16 sm:h-20 border-b border-zinc-800/60 flex items-center justify-center text-[10px] font-medium text-amber-400 tracking-tight">
+              Main
             </div>
-            <div className="h-14 flex items-center justify-center text-[10px] font-mono text-emerald-400">
-              A1
+            <div className="h-14 flex items-center justify-center text-[10px] font-medium text-emerald-400 tracking-tight">
+              Audio
             </div>
           </div>
 
@@ -510,45 +604,76 @@ export const Timeline: React.FC<TimelineProps> = ({
                 const leftPx = ov.startTime * pxPerSec;
                 const widthPx = Math.max(36, ov.duration * pxPerSec);
                 const isSel = ov.id === selectedOverlayId;
+                const colorClass =
+                  ov.kind === 'mask'
+                    ? isSel
+                      ? 'bg-amber-500/25 border-amber-400 text-amber-100'
+                      : 'bg-amber-950/60 border-amber-700/70 text-amber-200 hover:border-amber-500'
+                    : ov.kind === 'visual' || ov.kind === 'image' || ov.kind === 'video'
+                      ? isSel
+                        ? 'bg-violet-500/25 border-violet-400 text-violet-100'
+                        : 'bg-violet-950/60 border-violet-700/70 text-violet-200 hover:border-violet-500'
+                      : isSel
+                        ? 'bg-sky-500/25 border-sky-400 text-sky-100'
+                        : 'bg-sky-950/60 border-sky-800/70 text-sky-200 hover:border-sky-500';
+                const labelText =
+                  ov.kind === 'mask'
+                    ? `Mask · ${ov.maskShape || 'shape'}`
+                    : ov.kind === 'visual'
+                      ? `FX · ${ov.overlayName || ov.visualOverlayId || 'Overlay'}`
+                      : ov.kind === 'video'
+                        ? `PiP · ${ov.overlayName || 'Video'}`
+                        : ov.kind === 'image'
+                          ? `PiP · ${ov.overlayName || 'Cutout'}`
+                          : ov.kind === 'text'
+                            ? ov.text || 'Text'
+                            : ov.stickerKind;
+
                 return (
                   <div
                     key={ov.id}
                     onPointerDown={(e) => {
                       e.stopPropagation();
+                      try {
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                      } catch {
+                        // ignore
+                      }
                       onSelectOverlay(ov.id);
                       const startX = e.clientX;
                       const origStart = ov.startTime;
                       const onMove = (ev: PointerEvent) => {
                         const dt = (ev.clientX - startX) / pxPerSec;
-                        onUpdateOverlay(ov.id, {
-                          startTime: Math.max(0, Number((origStart + dt).toFixed(2))),
+                        const snapped = snapTime(Math.max(0, origStart + dt), true);
+                        setSnapLineSec(snapped.snappedTo);
+                        setDragHud({
+                          xPx: snapped.time * pxPerSec,
+                          label: `${formatTimecode(snapped.time)}`,
                         });
+                        onUpdateOverlay(ov.id, { startTime: snapped.time });
                       };
                       const onUp = () => {
+                        setSnapLineSec(null);
+                        setDragHud(null);
                         window.removeEventListener('pointermove', onMove);
                         window.removeEventListener('pointerup', onUp);
+                        window.removeEventListener('pointercancel', onUp);
                       };
                       window.addEventListener('pointermove', onMove);
                       window.addEventListener('pointerup', onUp);
+                      window.addEventListener('pointercancel', onUp);
                     }}
                     style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
-                    className={`absolute top-1.5 bottom-1.5 rounded px-2 flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing touch-none border text-[11px] overflow-hidden ${
-                      ov.kind === 'mask'
-                        ? isSel
-                          ? 'bg-amber-500/25 border-amber-400 text-amber-100'
-                          : 'bg-amber-950/60 border-amber-700/70 text-amber-200 hover:border-amber-500'
-                        : isSel
-                          ? 'bg-sky-500/25 border-sky-400 text-sky-100'
-                          : 'bg-sky-950/60 border-sky-800/70 text-sky-200 hover:border-sky-500'
-                    }`}
+                    className={`absolute top-1.5 bottom-1.5 rounded px-2 flex items-center justify-between gap-1 cursor-grab active:cursor-grabbing touch-none border text-[11px] overflow-hidden ${colorClass}`}
                   >
-                    <span className="truncate font-medium">
-                      {ov.kind === 'mask'
-                        ? `Mask · ${ov.maskShape || 'shape'}`
-                        : ov.kind === 'text'
-                          ? ov.text || 'Text'
-                          : ov.stickerKind}
-                    </span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {ov.layerOrder === 'behind' && (
+                        <span className="px-1 py-0.2 rounded bg-amber-500/25 border border-amber-500/40 text-[9px] font-mono text-amber-300 shrink-0">
+                          Behind
+                        </span>
+                      )}
+                      <span className="truncate font-medium">{labelText}</span>
+                    </div>
 
                     {/* Keyframe Diamond Markers */}
                     {ov.keyframes.map((kf) => {
@@ -574,22 +699,43 @@ export const Timeline: React.FC<TimelineProps> = ({
                       title="Drag to resize duration"
                       onPointerDown={(e) => {
                         e.stopPropagation();
+                        try {
+                          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        } catch {
+                          // ignore
+                        }
                         const startX = e.clientX;
                         const origDur = ov.duration;
                         const onMove = (ev: PointerEvent) => {
                           const dt = (ev.clientX - startX) / pxPerSec;
-                          onUpdateOverlay(ov.id, {
-                            duration: clamp(Number((origDur + dt).toFixed(2)), 0.2, 30),
+                          const snappedEnd = snapTime(
+                            ov.startTime + clamp(origDur + dt, 0.2, 30),
+                            true
+                          );
+                          const nextDur = clamp(
+                            Number((snappedEnd.time - ov.startTime).toFixed(2)),
+                            0.2,
+                            30
+                          );
+                          setSnapLineSec(snappedEnd.snappedTo);
+                          setDragHud({
+                            xPx: (ov.startTime + nextDur) * pxPerSec,
+                            label: `${nextDur.toFixed(2)}s`,
                           });
+                          onUpdateOverlay(ov.id, { duration: nextDur });
                         };
                         const onUp = () => {
+                          setSnapLineSec(null);
+                          setDragHud(null);
                           window.removeEventListener('pointermove', onMove);
                           window.removeEventListener('pointerup', onUp);
+                          window.removeEventListener('pointercancel', onUp);
                         };
                         window.addEventListener('pointermove', onMove);
                         window.addEventListener('pointerup', onUp);
+                        window.addEventListener('pointercancel', onUp);
                       }}
-                      className="w-1.5 self-stretch bg-sky-400/40 hover:bg-sky-300 cursor-ew-resize shrink-0 -mr-2"
+                      className="w-1.5 self-stretch bg-white/25 hover:bg-amber-300 cursor-ew-resize shrink-0 -mr-2"
                     />
                   </div>
                 );
@@ -607,7 +753,9 @@ export const Timeline: React.FC<TimelineProps> = ({
             >
               {clips.length === 0 ? (
                 <div className="px-4 text-xs text-zinc-500">
-                  Add clips or photos from the Media Library or use Chop Beat to build fast cuts.
+                  {globalOverlays.length > 0
+                    ? 'Main track is empty — Track Overlay items above remain active. Add clips anytime or preview & export.'
+                    : 'Add clips or photos from the Media Library or use Chop Beat to build fast cuts.'}
                 </div>
               ) : (
                 clipSpans.map(({ clip, start, len }, index) => {
@@ -619,6 +767,37 @@ export const Timeline: React.FC<TimelineProps> = ({
                   return (
                     <React.Fragment key={clip.id}>
                       <div
+                        onPointerDown={(e) => {
+                          if (e.button !== 0 || clips.length < 2) return;
+                          const startX = e.clientX;
+                          let currentIndex = index;
+                          let moved = false;
+                          const onMove = (ev: PointerEvent) => {
+                            const dx = ev.clientX - startX;
+                            if (!moved && Math.abs(dx) < 18) return;
+                            moved = true;
+                            const targetTime = clamp(
+                              start + len / 2 + dx / pxPerSec,
+                              0,
+                              totalDuration
+                            );
+                            const targetIdx = clipSpans.findIndex(
+                              (s) => targetTime >= s.start && targetTime <= s.start + s.len
+                            );
+                            if (targetIdx !== -1 && targetIdx !== currentIndex) {
+                              onReorderClip(currentIndex, targetIdx);
+                              currentIndex = targetIdx;
+                            }
+                          };
+                          const onUp = () => {
+                            window.removeEventListener('pointermove', onMove);
+                            window.removeEventListener('pointerup', onUp);
+                            window.removeEventListener('pointercancel', onUp);
+                          };
+                          window.addEventListener('pointermove', onMove);
+                          window.addEventListener('pointerup', onUp);
+                          window.addEventListener('pointercancel', onUp);
+                        }}
                         onClick={(e) => {
                           onSelectClip(clip.id);
                           if (totalDuration > 0) {
@@ -640,6 +819,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                             className="absolute inset-0 w-full h-full object-cover opacity-40 pointer-events-none"
                           />
                         )}
+                        <div className="absolute inset-x-0 top-0 h-1 bg-[repeating-linear-gradient(to_right,rgba(255,255,255,0.22)_0px,rgba(255,255,255,0.22)_6px,transparent_6px,transparent_12px)] pointer-events-none" />
 
                         <div className="relative z-10 h-full px-2 py-1.5 flex flex-col justify-between bg-gradient-to-t from-zinc-950/90 via-zinc-950/30 to-zinc-950/60">
                           <div className="flex items-center justify-between gap-1">
@@ -651,6 +831,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 truncate">
+                            {clip.edits.bgRemoval?.enabled && (
+                              <span className="text-emerald-400">Cutout</span>
+                            )}
                             {clip.edits.mask && clip.edits.mask.shape !== 'none' && (
                               <span className="text-amber-400">Mask:{clip.edits.mask.shape}</span>
                             )}
@@ -685,43 +868,69 @@ export const Timeline: React.FC<TimelineProps> = ({
                           title="Drag to trim start"
                           onPointerDown={(e) => {
                             e.stopPropagation();
+                            try {
+                              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                            } catch {
+                              // ignore
+                            }
                             const startX = e.clientX;
                             const origStart = clip.trimStart;
                             const onMove = (ev: PointerEvent) => {
                               const delta = ((ev.clientX - startX) / pxPerSec) * clip.speed;
                               const nextStart = clamp(origStart + delta, 0, clip.trimEnd - 0.15);
+                              const nextLen = (clip.trimEnd - nextStart) / clip.speed;
+                              setDragHud({
+                                xPx: leftPx,
+                                label: `In ${nextStart.toFixed(2)}s · ${nextLen.toFixed(2)}s`,
+                              });
                               onUpdateClip(clip.id, { trimStart: Number(nextStart.toFixed(2)) });
                             };
                             const onUp = () => {
+                              setDragHud(null);
                               window.removeEventListener('pointermove', onMove);
                               window.removeEventListener('pointerup', onUp);
+                              window.removeEventListener('pointercancel', onUp);
                             };
                             window.addEventListener('pointermove', onMove);
                             window.addEventListener('pointerup', onUp);
+                            window.addEventListener('pointercancel', onUp);
                           }}
-                          className="absolute top-0 left-0 bottom-0 w-1.5 bg-zinc-200/15 hover:bg-amber-400 cursor-ew-resize z-20"
+                          className="absolute top-0 left-0 bottom-0 w-2 bg-zinc-200/15 hover:bg-amber-400 cursor-ew-resize z-20 touch-none"
                         />
 
                         <div
                           title="Drag to trim end"
                           onPointerDown={(e) => {
                             e.stopPropagation();
+                            try {
+                              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                            } catch {
+                              // ignore
+                            }
                             const startX = e.clientX;
                             const origEnd = clip.trimEnd;
                             const maxEnd = clip.kind === 'video' ? clip.duration : 20;
                             const onMove = (ev: PointerEvent) => {
                               const delta = ((ev.clientX - startX) / pxPerSec) * clip.speed;
                               const nextEnd = clamp(origEnd + delta, clip.trimStart + 0.15, maxEnd);
+                              const nextLen = (nextEnd - clip.trimStart) / clip.speed;
+                              setDragHud({
+                                xPx: leftPx + nextLen * pxPerSec,
+                                label: `Len ${nextLen.toFixed(2)}s`,
+                              });
                               onUpdateClip(clip.id, { trimEnd: Number(nextEnd.toFixed(2)) });
                             };
                             const onUp = () => {
+                              setDragHud(null);
                               window.removeEventListener('pointermove', onMove);
                               window.removeEventListener('pointerup', onUp);
+                              window.removeEventListener('pointercancel', onUp);
                             };
                             window.addEventListener('pointermove', onMove);
                             window.addEventListener('pointerup', onUp);
+                            window.addEventListener('pointercancel', onUp);
                           }}
-                          className="absolute top-0 right-0 bottom-0 w-1.5 bg-zinc-200/15 hover:bg-amber-400 cursor-ew-resize z-20"
+                          className="absolute top-0 right-0 bottom-0 w-2 bg-zinc-200/15 hover:bg-amber-400 cursor-ew-resize z-20 touch-none"
                         />
                       </div>
 
@@ -793,24 +1002,37 @@ export const Timeline: React.FC<TimelineProps> = ({
                     key={ac.id}
                     onPointerDown={(e) => {
                       e.stopPropagation();
+                      try {
+                        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                      } catch {
+                        // ignore
+                      }
                       onSelectAudio(ac.id);
                       const startX = e.clientX;
                       const origStart = ac.startTime;
                       const onMove = (ev: PointerEvent) => {
                         const dt = (ev.clientX - startX) / pxPerSec;
-                        onUpdateAudioClip(ac.id, {
-                          startTime: Math.max(0, Number((origStart + dt).toFixed(2))),
+                        const snapped = snapTime(Math.max(0, origStart + dt), true);
+                        setSnapLineSec(snapped.snappedTo);
+                        setDragHud({
+                          xPx: snapped.time * pxPerSec,
+                          label: formatTimecode(snapped.time),
                         });
+                        onUpdateAudioClip(ac.id, { startTime: snapped.time });
                       };
                       const onUp = () => {
+                        setSnapLineSec(null);
+                        setDragHud(null);
                         window.removeEventListener('pointermove', onMove);
                         window.removeEventListener('pointerup', onUp);
+                        window.removeEventListener('pointercancel', onUp);
                       };
                       window.addEventListener('pointermove', onMove);
                       window.addEventListener('pointerup', onUp);
+                      window.addEventListener('pointercancel', onUp);
                     }}
                     style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
-                    className={`absolute top-1.5 bottom-1.5 rounded-md border px-2 py-1 flex flex-col justify-between overflow-hidden cursor-grab active:cursor-grabbing ${
+                    className={`absolute top-1.5 bottom-1.5 rounded-md border px-2 py-1 flex flex-col justify-between overflow-hidden cursor-grab active:cursor-grabbing touch-none ${
                       isSel
                         ? 'border-emerald-400 bg-emerald-950/70'
                         : 'border-emerald-800/70 bg-emerald-950/40 hover:border-emerald-500'
@@ -837,27 +1059,57 @@ export const Timeline: React.FC<TimelineProps> = ({
                       title="Trim audio duration"
                       onPointerDown={(e) => {
                         e.stopPropagation();
+                        try {
+                          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                        } catch {
+                          // ignore
+                        }
                         const startX = e.clientX;
                         const origEnd = ac.trimEnd;
                         const onMove = (ev: PointerEvent) => {
                           const dt = (ev.clientX - startX) / pxPerSec;
-                          onUpdateAudioClip(ac.id, {
-                            trimEnd: clamp(Number((origEnd + dt).toFixed(2)), ac.trimStart + 0.2, 60),
+                          const nextEnd = clamp(Number((origEnd + dt).toFixed(2)), ac.trimStart + 0.2, 60);
+                          const nextDur = nextEnd - ac.trimStart;
+                          setDragHud({
+                            xPx: (ac.startTime + nextDur) * pxPerSec,
+                            label: `${nextDur.toFixed(2)}s`,
                           });
+                          onUpdateAudioClip(ac.id, { trimEnd: nextEnd });
                         };
                         const onUp = () => {
+                          setDragHud(null);
                           window.removeEventListener('pointermove', onMove);
                           window.removeEventListener('pointerup', onUp);
+                          window.removeEventListener('pointercancel', onUp);
                         };
                         window.addEventListener('pointermove', onMove);
                         window.addEventListener('pointerup', onUp);
+                        window.addEventListener('pointercancel', onUp);
                       }}
-                      className="absolute top-0 right-0 bottom-0 w-1.5 bg-emerald-400/20 hover:bg-emerald-400 cursor-ew-resize"
+                      className="absolute top-0 right-0 bottom-0 w-2 bg-emerald-400/20 hover:bg-emerald-400 cursor-ew-resize touch-none"
                     />
                   </div>
                 );
               })}
             </div>
+
+            {/* Magnetic Snap Indicator Line */}
+            {snapLineSec !== null && (
+              <div
+                style={{ left: `${snapLineSec * pxPerSec}px` }}
+                className="absolute top-0 bottom-0 w-px bg-amber-400/90 pointer-events-none z-35"
+              />
+            )}
+
+            {/* Live Trim / Drag HUD */}
+            {dragHud && (
+              <div
+                style={{ left: `${dragHud.xPx}px` }}
+                className="absolute top-1 -translate-x-1/2 px-1.5 py-0.5 rounded bg-amber-400 text-zinc-950 font-mono text-[10px] font-semibold tabular-nums whitespace-nowrap shadow-lg pointer-events-none z-50"
+              >
+                {dragHud.label}
+              </div>
+            )}
 
             {/* Cursor Skimmer Line (Laptop Mouse/Trackpad Hover) */}
             {skim && (

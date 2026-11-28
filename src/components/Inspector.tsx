@@ -1,20 +1,31 @@
 import React from 'react';
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   ChevronLeft,
   ChevronRight,
   CircleDot,
   ClipboardCopy,
   ClipboardPaste,
+  Copy,
   Diamond,
+  Eraser,
   Film,
   FlipHorizontal,
   FlipVertical,
+  Lasso,
+  Layers,
   Lock,
+  MousePointerClick,
+  Paintbrush,
+  Pipette,
   Plus,
   RotateCcw,
   RotateCw,
+  Scissors,
   Trash2,
+  User,
   Volume2,
   VolumeX,
   X,
@@ -22,37 +33,49 @@ import {
 import {
   ASPECT_RATIO_OPTIONS,
   CLIP_ANIMATION_OPTIONS,
+  DEFAULT_BG_REMOVAL,
   DEFAULT_COLOR_GRADE,
   DEFAULT_EFFECTS,
   DEFAULT_MASK,
   DEFAULT_TRANSFORM,
   FILM_PRESETS,
-  FONT_OPTIONS,
   MASK_SHAPE_OPTIONS,
-  TEXT_STYLE_TEMPLATES,
+  MIRROR_TILE_OPTIONS,
+  DUOTONE_MAP_OPTIONS,
+  OVERLAY_BLEND_MODES,
   VELOCITY_PRESETS,
+  VISUAL_OVERLAY_PRESETS,
+  normalizeTextEffects,
 } from '../data/presets';
 import {
   AspectRatioId,
   AudioClip,
+  BgAutoSubjectType,
+  BgBackdropMode,
+  BgBrushToolMode,
+  BgRemovalMode,
+  BgRemovalSettings,
   ClipAnimationSettings,
   ClipAnimationType,
   ClipKeyframe,
   ColorGrade,
   EditDocument,
   EffectsSettings,
-  FontFamilyId,
   InspectorTab,
   KeyframeEasing,
   MaskBgEffect,
   MaskSettings,
   MaskShape,
   OverlayAnimationType,
+  OverlayBlendMode,
+  OverlayLayerOrder,
+  PhotoVisualOverlay,
   TextOverlay,
   TimelineClip,
   TimelineOverlayItem,
   TransformSettings,
   VelocityPresetId,
+  VisualOverlayPresetId,
   WorkspaceMode,
 } from '../types/editor';
 import {
@@ -62,6 +85,7 @@ import {
 } from '../utils/renderEngine';
 import { clamp } from '../utils/timecode';
 import { Histogram } from './Histogram';
+import { TextEffectsEditor, UnifiedTextPatch } from './TextEffectsEditor';
 
 interface InspectorProps {
   edits: EditDocument;
@@ -89,24 +113,60 @@ interface InspectorProps {
   onApplyPreset: (presetId: string) => void;
   onUpdateTransform: (patch: Partial<TransformSettings>) => void;
   onUpdateMask: (patch: Partial<MaskSettings>) => void;
+  bgBrushMode: BgBrushToolMode;
+  bgBrushSize: number;
+  bgEyedropperActive: boolean;
+  onUpdateBgRemoval: (patch: Partial<BgRemovalSettings>) => void;
+  onSetBgBrushMode: (mode: BgBrushToolMode) => void;
+  onSetBgBrushSize: (size: number) => void;
+  onToggleBgEyedropper: () => void;
+  onClearBgStrokes: () => void;
+  onUndoBgDraw: () => void;
+  onExtractCutoutToOverlay: () => void;
+  onAddTextBehindSubject: () => void;
   onSetAspectRatio: (ratio: AspectRatioId) => void;
   onUpdateEffects: (patch: Partial<EffectsSettings>) => void;
   onUpdateAnimation: (patch: Partial<ClipAnimationSettings>) => void;
   onUpdateClipMeta: (clipId: string, patch: Partial<TimelineClip>) => void;
+  onConvertClipToOverlay?: (clipId: string) => void;
   onToggleClipKeyframe: () => void;
   onUpdateClipKeyframeValues: (patch: Partial<ClipKeyframe>) => void;
   onUpdateGlobalOverlay: (id: string, patch: Partial<TimelineOverlayItem>) => void;
   onToggleOverlayKeyframe: (id: string) => void;
   onUpdateOverlayMotionAtPlayhead: (
     id: string,
-    patch: { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number }
+    patch: {
+      x?: number;
+      y?: number;
+      scale?: number;
+      rotation?: number;
+      tiltX?: number;
+      tiltY?: number;
+      opacity?: number;
+      scaleX?: number;
+      scaleY?: number;
+      shadowDepth?: number;
+      glowIntensity?: number;
+      effectIntensity?: number;
+      charPhase?: number;
+    }
   ) => void;
+  onDuplicateGlobalOverlay: (id: string) => void;
   onDeleteGlobalOverlay: (id: string) => void;
   onUpdateAudioClip: (id: string, patch: Partial<AudioClip>) => void;
   onDeleteAudioClip: (id: string) => void;
+  selectedPhotoOverlayId?: string | null;
+  onSelectPhotoOverlay?: (id: string | null) => void;
+  selectedPhotoVisualOverlayId?: string | null;
+  onSelectPhotoVisualOverlay?: (id: string | null) => void;
   onAddPhotoTextOverlay: () => void;
   onUpdatePhotoTextOverlay: (id: string, patch: Partial<TextOverlay>) => void;
+  onDuplicatePhotoTextOverlay: (id: string) => void;
+  onReorderPhotoTextOverlay?: (id: string, dir: -1 | 1) => void;
   onRemovePhotoTextOverlay: (id: string) => void;
+  onUpdatePhotoVisualOverlay: (id: string, patch: Partial<PhotoVisualOverlay>) => void;
+  onRemovePhotoVisualOverlay: (id: string) => void;
+  onOpenOverlaysDrawer: () => void;
   onCopyGrade: () => void;
   onPasteGrade: () => void;
   onResetAll: () => void;
@@ -163,6 +223,38 @@ const SliderRow: React.FC<SliderRowProps> = ({
   );
 };
 
+const AeMotionCurveGraph: React.FC<{
+  mode: KeyframeEasing | VelocityPresetId;
+}> = ({ mode }) => {
+  const pathMap: Record<string, string> = {
+    linear: 'M 4 34 L 92 6',
+    'ease-out': 'M 4 34 C 22 8, 52 6, 92 6',
+    'ease-in-out': 'M 4 34 C 40 34, 56 6, 92 6',
+    punch: 'M 4 34 C 14 2, 34 2, 92 6',
+    bounce: 'M 4 34 Q 34 2, 54 14 T 76 6 T 92 6',
+    montage: 'M 4 34 C 28 32, 32 4, 54 6 S 76 32, 92 6',
+    flash: 'M 4 34 C 8 2, 18 2, 92 6',
+    hero: 'M 4 34 C 46 34, 50 4, 92 6',
+    bullet: 'M 4 34 C 36 32, 42 30, 52 14 S 68 30, 92 6',
+  };
+  const d = pathMap[mode] || pathMap['ease-in-out'];
+  return (
+    <svg
+      width={96}
+      height={40}
+      viewBox="0 0 96 40"
+      aria-label={`Motion curve preview for ${mode}`}
+      className="rounded border border-zinc-800 bg-zinc-950 shrink-0"
+    >
+      <line x1="0" y1="20" x2="96" y2="20" stroke="#27272a" strokeWidth="1" />
+      <line x1="48" y1="0" x2="48" y2="40" stroke="#27272a" strokeWidth="1" />
+      <path d={d} fill="none" stroke="#fbbf24" strokeWidth="1.75" strokeLinecap="round" />
+      <circle cx="4" cy="34" r="2.2" fill="#f59e0b" />
+      <circle cx="92" cy="6" r="2.2" fill="#f59e0b" />
+    </svg>
+  );
+};
+
 export const Inspector: React.FC<InspectorProps> = ({
   edits,
   activeTab,
@@ -189,21 +281,43 @@ export const Inspector: React.FC<InspectorProps> = ({
   onApplyPreset,
   onUpdateTransform,
   onUpdateMask,
+  bgBrushMode,
+  bgBrushSize,
+  bgEyedropperActive,
+  onUpdateBgRemoval,
+  onSetBgBrushMode,
+  onSetBgBrushSize,
+  onToggleBgEyedropper,
+  onClearBgStrokes,
+  onUndoBgDraw,
+  onExtractCutoutToOverlay,
+  onAddTextBehindSubject,
   onSetAspectRatio,
   onUpdateEffects,
   onUpdateAnimation,
   onUpdateClipMeta,
+  onConvertClipToOverlay,
   onToggleClipKeyframe,
   onUpdateClipKeyframeValues,
   onUpdateGlobalOverlay,
   onToggleOverlayKeyframe,
   onUpdateOverlayMotionAtPlayhead,
+  onDuplicateGlobalOverlay,
   onDeleteGlobalOverlay,
   onUpdateAudioClip,
   onDeleteAudioClip,
+  selectedPhotoOverlayId = null,
+  onSelectPhotoOverlay,
+  selectedPhotoVisualOverlayId = null,
+  onSelectPhotoVisualOverlay,
   onAddPhotoTextOverlay,
   onUpdatePhotoTextOverlay,
+  onDuplicatePhotoTextOverlay,
+  onReorderPhotoTextOverlay,
   onRemovePhotoTextOverlay,
+  onUpdatePhotoVisualOverlay,
+  onRemovePhotoVisualOverlay,
+  onOpenOverlaysDrawer,
   onCopyGrade,
   onPasteGrade,
   onResetAll,
@@ -243,9 +357,15 @@ export const Inspector: React.FC<InspectorProps> = ({
     const overlayHeading =
       selectedOverlay.kind === 'mask'
         ? 'Mask Overlay'
-        : selectedOverlay.kind === 'text'
-          ? 'Text & Keyframes'
-          : 'Sticker & Keyframes';
+        : selectedOverlay.kind === 'visual'
+          ? 'Cinema Overlay'
+          : selectedOverlay.kind === 'video'
+            ? 'Video PiP Overlay'
+            : selectedOverlay.kind === 'image'
+              ? 'Image / Cutout Overlay'
+              : selectedOverlay.kind === 'text'
+                ? 'Text & Keyframes'
+                : 'Sticker & Keyframes';
 
     return (
       <aside className={asideClass}>
@@ -338,15 +458,24 @@ export const Inspector: React.FC<InspectorProps> = ({
               </div>
             )}
 
-            <div className="space-y-1">
-              <label className="block text-[11px] text-zinc-400">Curve Easing</label>
-              <div className="grid grid-cols-4 gap-1">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <label className="block text-[11px] text-zinc-400">Curve Easing (AE Graph)</label>
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    {selectedOverlay.easing || 'ease-in-out'}
+                  </span>
+                </div>
+                <AeMotionCurveGraph mode={selectedOverlay.easing || 'ease-in-out'} />
+              </div>
+              <div className="grid grid-cols-5 gap-1">
                 {(
                   [
                     { id: 'linear', label: 'Linear' },
                     { id: 'ease-out', label: 'Ease' },
                     { id: 'ease-in-out', label: 'Smooth' },
                     { id: 'punch', label: 'Punch' },
+                    { id: 'bounce', label: 'Bounce' },
                   ] as { id: KeyframeEasing; label: string }[]
                 ).map((es) => (
                   <button
@@ -366,7 +495,327 @@ export const Inspector: React.FC<InspectorProps> = ({
                 ))}
               </div>
             </div>
+
+            <div className="pt-2 border-t border-zinc-800/80 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-zinc-300 font-mono">
+                  wiggle({(selectedOverlay.wiggleFreq ?? 3).toFixed(1)}, {Math.round(selectedOverlay.wiggleAmp ?? 0)})
+                </span>
+                {(selectedOverlay.wiggleAmp ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateGlobalOverlay(selectedOverlay.id, { wiggleAmp: 0 })
+                    }
+                    className="text-[10px] text-amber-400 hover:text-amber-300 cursor-pointer"
+                  >
+                    Off
+                  </button>
+                )}
+              </div>
+              <SliderRow
+                label="Wiggle Amp"
+                value={Math.round(selectedOverlay.wiggleAmp ?? 0)}
+                min={0}
+                max={60}
+                defaultValue={0}
+                onChange={(v) =>
+                  onUpdateGlobalOverlay(selectedOverlay.id, { wiggleAmp: v })
+                }
+              />
+              <SliderRow
+                label="Wiggle Freq"
+                value={Number((selectedOverlay.wiggleFreq ?? 3).toFixed(1))}
+                min={0.5}
+                max={16}
+                step={0.5}
+                unit="Hz"
+                defaultValue={3}
+                onChange={(v) =>
+                  onUpdateGlobalOverlay(selectedOverlay.id, { wiggleFreq: v })
+                }
+              />
+            </div>
           </div>
+
+          {/* Layer Depth Placement (Front vs Behind Cutout Subject) */}
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-zinc-200 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-amber-400" />
+                <span>Layer Depth</span>
+              </span>
+              <span className="text-[10px] font-mono text-zinc-400">
+                {(selectedOverlay.layerOrder || 'front') === 'behind' ? 'Behind Subject' : 'In Front'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-1 p-1 bg-zinc-950 rounded-md border border-zinc-800">
+              {(
+                [
+                  { id: 'front', label: 'In Front' },
+                  { id: 'behind', label: 'Behind Subject' },
+                ] as { id: OverlayLayerOrder; label: string }[]
+              ).map((pos) => (
+                <button
+                  key={pos.id}
+                  type="button"
+                  onClick={() =>
+                    onUpdateGlobalOverlay(selectedOverlay.id, { layerOrder: pos.id })
+                  }
+                  className={`py-1.5 text-[11px] font-medium rounded transition-colors cursor-pointer whitespace-nowrap ${
+                    (selectedOverlay.layerOrder || 'front') === pos.id
+                      ? 'bg-amber-500/20 text-amber-300'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {pos.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(selectedOverlay.kind === 'visual' ||
+            selectedOverlay.kind === 'image' ||
+            selectedOverlay.kind === 'video') && (
+            <div className="space-y-4">
+              {(selectedOverlay.kind === 'video' || selectedOverlay.kind === 'image') && (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-zinc-200">
+                      {selectedOverlay.kind === 'video'
+                        ? 'Video Overlay Controls'
+                        : 'Image Overlay Cutout'}
+                    </span>
+                    {selectedOverlay.kind === 'video' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateGlobalOverlay(selectedOverlay.id, {
+                            muted: !selectedOverlay.muted,
+                          })
+                        }
+                        className="flex items-center gap-1 px-2 py-1 rounded border border-zinc-700 bg-zinc-950 text-[11px] text-zinc-200 hover:border-amber-500 cursor-pointer"
+                      >
+                        {selectedOverlay.muted ? (
+                          <>
+                            <VolumeX className="w-3 h-3 text-zinc-500" />
+                            <span>Muted</span>
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="w-3 h-3 text-amber-400" />
+                            <span>Audio On</span>
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prevBg = selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL;
+                      onUpdateGlobalOverlay(selectedOverlay.id, {
+                        bgRemoval: {
+                          ...prevBg,
+                          enabled: !prevBg.enabled,
+                          mode: prevBg.mode === 'drawn' ? 'auto' : prevBg.mode || 'auto',
+                          backdropMode: 'transparent',
+                        },
+                      });
+                    }}
+                    className={`w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded border text-xs font-medium transition-colors cursor-pointer ${
+                      selectedOverlay.bgRemoval?.enabled
+                        ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-amber-500'
+                    }`}
+                  >
+                    <Scissors className="w-3.5 h-3.5" />
+                    <span>
+                      {selectedOverlay.bgRemoval?.enabled
+                        ? 'BG Removal Active'
+                        : 'Remove Overlay Background'}
+                    </span>
+                  </button>
+
+                  {selectedOverlay.bgRemoval?.enabled && (
+                    <div className="space-y-2.5 pt-1 border-t border-zinc-800/80">
+                      <div className="grid grid-cols-3 gap-1">
+                        {(
+                          [
+                            { id: 'auto', label: 'Auto' },
+                            { id: 'chroma', label: 'Color Key' },
+                            { id: 'luma', label: 'Luma Key' },
+                          ] as { id: BgRemovalMode; label: string }[]
+                        ).map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateGlobalOverlay(selectedOverlay.id, {
+                                bgRemoval: {
+                                  ...(selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL),
+                                  enabled: true,
+                                  mode: m.id,
+                                  backdropMode: 'transparent',
+                                },
+                              })
+                            }
+                            className={`py-1 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                              (selectedOverlay.bgRemoval?.mode || 'auto') === m.id
+                                ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                                : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-100'
+                            }`}
+                          >
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {(selectedOverlay.bgRemoval.mode || 'auto') === 'auto' && (
+                        <div className="grid grid-cols-3 gap-1">
+                          {(
+                            [
+                              { id: 'smart', label: 'Smart' },
+                              { id: 'person', label: 'Person' },
+                              { id: 'object', label: 'Object' },
+                            ] as { id: BgAutoSubjectType; label: string }[]
+                          ).map((t) => (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() =>
+                                onUpdateGlobalOverlay(selectedOverlay.id, {
+                                  bgRemoval: {
+                                    ...(selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL),
+                                    enabled: true,
+                                    mode: 'auto',
+                                    autoSubjectType: t.id,
+                                    backdropMode: 'transparent',
+                                  },
+                                })
+                              }
+                              className={`py-1 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                                (selectedOverlay.bgRemoval?.autoSubjectType || 'smart') === t.id
+                                  ? 'border-emerald-400 bg-emerald-500/15 text-emerald-300 font-medium'
+                                  : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-100'
+                              }`}
+                            >
+                              {t.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <SliderRow
+                        label="Threshold"
+                        value={selectedOverlay.bgRemoval.tolerance}
+                        min={5}
+                        max={95}
+                        unit="%"
+                        defaultValue={38}
+                        onChange={(v) =>
+                          onUpdateGlobalOverlay(selectedOverlay.id, {
+                            bgRemoval: {
+                              ...(selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL),
+                              enabled: true,
+                              tolerance: v,
+                            },
+                          })
+                        }
+                      />
+                      <SliderRow
+                        label="Edge Feather"
+                        value={selectedOverlay.bgRemoval.softness}
+                        min={0}
+                        max={80}
+                        unit="%"
+                        defaultValue={18}
+                        onChange={(v) =>
+                          onUpdateGlobalOverlay(selectedOverlay.id, {
+                            bgRemoval: {
+                              ...(selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL),
+                              enabled: true,
+                              softness: v,
+                            },
+                          })
+                        }
+                      />
+                      <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedOverlay.bgRemoval.invert}
+                          onChange={(e) =>
+                            onUpdateGlobalOverlay(selectedOverlay.id, {
+                              bgRemoval: {
+                                ...(selectedOverlay.bgRemoval || DEFAULT_BG_REMOVAL),
+                                enabled: true,
+                                invert: e.target.checked,
+                              },
+                            })
+                          }
+                          className="accent-amber-500"
+                        />
+                        <span>Invert Cutout</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {selectedOverlay.kind === 'visual' && (
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-zinc-300">Overlay Effect</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {VISUAL_OVERLAY_PRESETS.map((vp) => (
+                      <button
+                        key={vp.id}
+                        type="button"
+                        onClick={() =>
+                          onUpdateGlobalOverlay(selectedOverlay.id, {
+                            visualOverlayId: vp.id as VisualOverlayPresetId,
+                            overlayName: vp.name,
+                          })
+                        }
+                        className={`px-2 py-1.5 text-[11px] rounded border text-left truncate cursor-pointer ${
+                          selectedOverlay.visualOverlayId === vp.id
+                            ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                            : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        {vp.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-zinc-300">Blend Mode</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {OVERLAY_BLEND_MODES.map((bm) => (
+                    <button
+                      key={bm.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateGlobalOverlay(selectedOverlay.id, {
+                          blendMode: bm.id as OverlayBlendMode,
+                        })
+                      }
+                      className={`py-1.5 px-2.5 text-[11px] rounded border text-center cursor-pointer whitespace-nowrap ${
+                        (selectedOverlay.blendMode ||
+                          (selectedOverlay.kind === 'visual' ? 'screen' : 'normal')) === bm.id
+                          ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                          : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      {bm.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {selectedOverlay.kind === 'mask' && (
             <div className="space-y-4">
@@ -460,116 +909,82 @@ export const Inspector: React.FC<InspectorProps> = ({
           )}
 
           {selectedOverlay.kind === 'text' && (
-            <>
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-zinc-300">Caption Text</label>
-                <input
-                  type="text"
-                  value={selectedOverlay.text || ''}
-                  onChange={(e) =>
-                    onUpdateGlobalOverlay(selectedOverlay.id, { text: e.target.value })
+            <TextEffectsEditor
+              text={selectedOverlay.text || ''}
+              fontSize={selectedOverlay.fontSize || 44}
+              fontFamily={selectedOverlay.fontFamily || 'inter'}
+              letterSpacing={selectedOverlay.letterSpacing ?? 0}
+              color={selectedOverlay.color || '#ffffff'}
+              backdrop={Boolean(selectedOverlay.backdrop)}
+              styleTemplate={selectedOverlay.styleTemplate || 'clean'}
+              text3d={selectedOverlay.text3d}
+              layerOrder={selectedOverlay.layerOrder || 'front'}
+              blendMode={selectedOverlay.blendMode || 'normal'}
+              x={evaluated.x}
+              y={evaluated.y}
+              scale={evaluated.scale}
+              rotation={evaluated.rotation}
+              tiltX={evaluated.tiltX}
+              tiltY={evaluated.tiltY}
+              opacity={evaluated.opacity}
+              onDuplicate={() => onDuplicateGlobalOverlay(selectedOverlay.id)}
+              onChange={(patch: UnifiedTextPatch) => {
+                const motionPatch: {
+                  x?: number;
+                  y?: number;
+                  scale?: number;
+                  rotation?: number;
+                  tiltX?: number;
+                  tiltY?: number;
+                  opacity?: number;
+                } = {};
+                const staticPatch: Partial<TimelineOverlayItem> = {};
+                if (patch.x !== undefined) motionPatch.x = patch.x;
+                if (patch.y !== undefined) motionPatch.y = patch.y;
+                if (patch.scale !== undefined) motionPatch.scale = patch.scale;
+                if (patch.rotation !== undefined) motionPatch.rotation = patch.rotation;
+                if (patch.tiltX !== undefined) motionPatch.tiltX = patch.tiltX;
+                if (patch.tiltY !== undefined) motionPatch.tiltY = patch.tiltY;
+                if (patch.opacity !== undefined) motionPatch.opacity = patch.opacity;
+                if (patch.text !== undefined) staticPatch.text = patch.text;
+                if (patch.fontSize !== undefined) staticPatch.fontSize = patch.fontSize;
+                if (patch.fontFamily !== undefined) staticPatch.fontFamily = patch.fontFamily;
+                if (patch.letterSpacing !== undefined)
+                  staticPatch.letterSpacing = patch.letterSpacing;
+                if (patch.color !== undefined) staticPatch.color = patch.color;
+                if (patch.backdrop !== undefined) staticPatch.backdrop = patch.backdrop;
+                if (patch.styleTemplate !== undefined)
+                  staticPatch.styleTemplate = patch.styleTemplate;
+                if (patch.text3d !== undefined) {
+                  if (selectedOverlay.keyframes.length === 0) {
+                    staticPatch.text3d = patch.text3d;
+                  } else if (motionPatch.tiltX === undefined && motionPatch.tiltY === undefined) {
+                    staticPatch.text3d = patch.text3d;
+                  } else {
+                    const { tiltX: _tx, tiltY: _ty, ...rest3d } = patch.text3d;
+                    staticPatch.text3d = {
+                      ...normalizeTextEffects(selectedOverlay.text3d),
+                      ...rest3d,
+                    };
                   }
-                  className="w-full px-3 py-2 text-xs bg-zinc-900 border border-zinc-800 rounded-md text-zinc-100 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-zinc-300">Font Family</label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {FONT_OPTIONS.map((font) => (
-                    <button
-                      key={font.id}
-                      type="button"
-                      onClick={() =>
-                        onUpdateGlobalOverlay(selectedOverlay.id, { fontFamily: font.id })
-                      }
-                      style={{ fontFamily: font.cssFamily }}
-                      className={`px-2.5 py-2 text-xs rounded border text-left truncate cursor-pointer ${
-                        selectedOverlay.fontFamily === font.id
-                          ? 'border-amber-500 bg-amber-500/15 text-zinc-50'
-                          : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      {font.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-zinc-300">Style Preset</label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {TEXT_STYLE_TEMPLATES.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() =>
-                        onUpdateGlobalOverlay(selectedOverlay.id, {
-                          styleTemplate: tpl.id,
-                          fontFamily: tpl.fontFamily,
-                          fontSize: tpl.fontSize,
-                          color: tpl.color,
-                          backdrop: tpl.backdrop,
-                        })
-                      }
-                      className={`px-2.5 py-1.5 text-[11px] rounded border text-left cursor-pointer ${
-                        selectedOverlay.styleTemplate === tpl.id
-                          ? 'border-amber-500 bg-amber-500/10 text-zinc-50'
-                          : 'border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {tpl.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(selectedOverlay.backdrop)}
-                    onChange={(e) =>
-                      onUpdateGlobalOverlay(selectedOverlay.id, { backdrop: e.target.checked })
-                    }
-                    className="accent-amber-500"
-                  />
-                  <span>Backdrop Box</span>
-                </label>
-
-                <div className="flex items-center gap-1.5">
-                  {['#ffffff', '#f59e0b', '#fef08a', '#38bdf8', '#09090b'].map((hex) => (
-                    <button
-                      key={hex}
-                      type="button"
-                      onClick={() => onUpdateGlobalOverlay(selectedOverlay.id, { color: hex })}
-                      aria-label={`Color ${hex}`}
-                      className={`w-5 h-5 rounded border cursor-pointer ${
-                        selectedOverlay.color === hex
-                          ? 'border-amber-400 scale-110'
-                          : 'border-zinc-700'
-                      }`}
-                      style={{ backgroundColor: hex }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <SliderRow
-                label="Letter Spacing"
-                value={selectedOverlay.letterSpacing ?? 0}
-                min={-2}
-                max={16}
-                unit="px"
-                onChange={(v) =>
-                  onUpdateGlobalOverlay(selectedOverlay.id, { letterSpacing: v })
                 }
-              />
-            </>
+                if (patch.layerOrder !== undefined) staticPatch.layerOrder = patch.layerOrder;
+                if (patch.blendMode !== undefined) staticPatch.blendMode = patch.blendMode;
+
+                if (Object.keys(staticPatch).length > 0) {
+                  onUpdateGlobalOverlay(selectedOverlay.id, staticPatch);
+                }
+                if (Object.keys(motionPatch).length > 0) {
+                  onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, motionPatch);
+                }
+              }}
+            />
           )}
 
           <div className="space-y-3 border-t border-zinc-800/80 pt-4">
-            <h3 className="text-xs font-semibold text-zinc-200">Transform Values</h3>
+            <h3 className="text-xs font-semibold text-zinc-200">
+              {selectedOverlay.kind === 'text' ? 'Keyframeable Motion & FX' : 'Transform Values'}
+            </h3>
             <SliderRow
               label="Scale"
               value={Math.round(evaluated.scale * 100)}
@@ -582,15 +997,39 @@ export const Inspector: React.FC<InspectorProps> = ({
               }
             />
             <SliderRow
-              label="Rotation"
+              label={selectedOverlay.kind === 'text' ? 'Z Rotation' : 'Rotation'}
               value={Math.round(evaluated.rotation)}
-              min={-180}
-              max={180}
+              min={selectedOverlay.kind === 'text' ? -360 : -180}
+              max={selectedOverlay.kind === 'text' ? 360 : 180}
               unit="°"
               onChange={(v) =>
                 onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { rotation: v })
               }
             />
+            {selectedOverlay.kind === 'text' && (
+              <div className="grid grid-cols-2 gap-2">
+                <SliderRow
+                  label="X Rotation"
+                  value={Math.round(evaluated.tiltX)}
+                  min={-360}
+                  max={360}
+                  unit="°"
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { tiltX: v })
+                  }
+                />
+                <SliderRow
+                  label="Y Rotation"
+                  value={Math.round(evaluated.tiltY)}
+                  min={-360}
+                  max={360}
+                  unit="°"
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { tiltY: v })
+                  }
+                />
+              </div>
+            )}
             <SliderRow
               label={selectedOverlay.kind === 'mask' ? 'Matte Opacity' : 'Opacity'}
               value={Math.round(evaluated.opacity * 100)}
@@ -602,6 +1041,78 @@ export const Inspector: React.FC<InspectorProps> = ({
                 onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { opacity: v / 100 })
               }
             />
+            {selectedOverlay.kind === 'text' && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <SliderRow
+                    label="Scale X Keyframe"
+                    value={Math.round(evaluated.scaleX * 100)}
+                    min={25}
+                    max={250}
+                    unit="%"
+                    defaultValue={100}
+                    onChange={(v) =>
+                      onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { scaleX: v / 100 })
+                    }
+                  />
+                  <SliderRow
+                    label="Scale Y Keyframe"
+                    value={Math.round(evaluated.scaleY * 100)}
+                    min={25}
+                    max={250}
+                    unit="%"
+                    defaultValue={100}
+                    onChange={(v) =>
+                      onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { scaleY: v / 100 })
+                    }
+                  />
+                </div>
+                <SliderRow
+                  label="3D Depth Keyframe"
+                  value={Math.round(evaluated.shadowDepth)}
+                  min={0}
+                  max={60}
+                  unit="px"
+                  defaultValue={18}
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { shadowDepth: v })
+                  }
+                />
+                <SliderRow
+                  label="Glow Keyframe"
+                  value={Math.round(evaluated.glowIntensity)}
+                  min={0}
+                  max={100}
+                  unit="%"
+                  defaultValue={0}
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { glowIntensity: v })
+                  }
+                />
+                <SliderRow
+                  label="FX Intensity Keyframe"
+                  value={Math.round(evaluated.effectIntensity)}
+                  min={0}
+                  max={150}
+                  unit="%"
+                  defaultValue={100}
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { effectIntensity: v })
+                  }
+                />
+                <SliderRow
+                  label="Letter Anim Phase"
+                  value={Math.round(evaluated.charPhase)}
+                  min={0}
+                  max={100}
+                  unit="%"
+                  defaultValue={100}
+                  onChange={(v) =>
+                    onUpdateOverlayMotionAtPlayhead(selectedOverlay.id, { charPhase: v })
+                  }
+                />
+              </>
+            )}
             <SliderRow
               label="Duration"
               value={Number(selectedOverlay.duration.toFixed(1))}
@@ -780,21 +1291,23 @@ export const Inspector: React.FC<InspectorProps> = ({
     : false;
 
   const activeMask = edits.mask || DEFAULT_MASK;
+  const activeBg = edits.bgRemoval || DEFAULT_BG_REMOVAL;
 
   return (
     <aside className={asideClass}>
       {mobileBar}
       <Histogram data={histogramData} />
 
-      <div className="px-3 py-2.5 border-b border-zinc-800">
-        <div className="grid grid-cols-5 gap-1 p-1 bg-zinc-900 rounded-md">
+      <div className="px-2.5 py-2.5 border-b border-zinc-800">
+        <div className="grid grid-cols-6 gap-0.5 p-1 bg-zinc-900 rounded-md">
           {(
             [
               { id: 'color', label: 'Color' },
               { id: 'transform', label: 'Crop' },
               { id: 'mask', label: 'Mask' },
+              { id: 'cutout', label: 'Cutout' },
               { id: 'effects', label: 'FX' },
-              { id: 'animate', label: workspace === 'timeline' ? 'Motion' : 'Text' },
+              { id: 'animate', label: workspace === 'timeline' ? 'Motion' : 'Layers' },
             ] as const
           ).map((t) => (
             <button
@@ -805,7 +1318,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                 if (t.id !== 'transform' && cropMode) onToggleCropMode(false);
                 if (t.id !== 'mask' && maskMode) onToggleMaskMode(false);
               }}
-              className={`py-1.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`py-1.5 text-[10px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 activeTab === t.id
                   ? 'bg-zinc-800 text-zinc-50'
                   : 'text-zinc-400 hover:text-zinc-200'
@@ -1234,6 +1747,555 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         )}
 
+        {activeTab === 'cutout' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <Scissors className="w-3.5 h-3.5 text-amber-400" />
+                <h3 className="text-xs font-semibold text-zinc-200">Background Removal</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextEnabled = !activeBg.enabled;
+                  onUpdateBgRemoval({
+                    enabled: nextEnabled,
+                    backdropMode:
+                      nextEnabled && activeBg.backdropMode === 'original'
+                        ? 'transparent'
+                        : activeBg.backdropMode,
+                  });
+                  if (!nextEnabled) onSetBgBrushMode('none');
+                }}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  activeBg.enabled
+                    ? 'bg-amber-400 text-zinc-950 border-amber-400'
+                    : 'bg-zinc-900 text-zinc-200 border-zinc-700 hover:border-amber-500'
+                }`}
+              >
+                {activeBg.enabled ? 'Active' : 'Enable'}
+              </button>
+            </div>
+
+            {/* Auto vs Pick vs Drawn Primary Mode Switch */}
+            <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-zinc-900 border border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateBgRemoval({
+                    enabled: true,
+                    mode: 'auto',
+                    backdropMode:
+                      activeBg.backdropMode === 'original' ? 'transparent' : activeBg.backdropMode,
+                  });
+                  onSetBgBrushMode('none');
+                }}
+                className={`py-1.5 px-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                  activeBg.enabled && activeBg.mode === 'auto'
+                    ? 'bg-amber-400 text-zinc-950'
+                    : 'text-zinc-300 hover:text-zinc-100'
+                }`}
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateBgRemoval({
+                    enabled: true,
+                    mode: 'pick',
+                    backdropMode:
+                      activeBg.backdropMode === 'original' ? 'transparent' : activeBg.backdropMode,
+                  });
+                  if (bgBrushMode !== 'pick-keep' && bgBrushMode !== 'pick-remove') {
+                    onSetBgBrushMode('pick-keep');
+                  }
+                }}
+                className={`py-1.5 px-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                  activeBg.enabled && activeBg.mode === 'pick'
+                    ? 'bg-amber-400 text-zinc-950'
+                    : 'text-zinc-300 hover:text-zinc-100'
+                }`}
+              >
+                Pick Subject
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateBgRemoval({
+                    enabled: true,
+                    mode: 'drawn',
+                    backdropMode:
+                      activeBg.backdropMode === 'original' ? 'transparent' : activeBg.backdropMode,
+                  });
+                  if (
+                    bgBrushMode === 'none' ||
+                    bgBrushMode === 'pick-keep' ||
+                    bgBrushMode === 'pick-remove'
+                  ) {
+                    onSetBgBrushMode('keep');
+                  }
+                }}
+                className={`py-1.5 px-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                  activeBg.enabled && activeBg.mode === 'drawn'
+                    ? 'bg-amber-400 text-zinc-950'
+                    : 'text-zinc-300 hover:text-zinc-100'
+                }`}
+              >
+                Draw
+              </button>
+            </div>
+
+            {activeBg.mode === 'auto' && (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                  <User className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Auto Subject Focus</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      { id: 'smart', label: 'Smart' },
+                      { id: 'person', label: 'Person' },
+                      { id: 'object', label: 'Object' },
+                    ] as { id: BgAutoSubjectType; label: string }[]
+                  ).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateBgRemoval({
+                          enabled: true,
+                          mode: 'auto',
+                          autoSubjectType: t.id,
+                          backdropMode:
+                            activeBg.backdropMode === 'original'
+                              ? 'transparent'
+                              : activeBg.backdropMode,
+                        })
+                      }
+                      className={`py-1.5 text-[11px] rounded border cursor-pointer whitespace-nowrap ${
+                        (activeBg.autoSubjectType || 'smart') === t.id
+                          ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                          : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-100'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1.5 rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-zinc-300">Pick Subject on Canvas</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateBgRemoval({
+                      enabled: true,
+                      mode:
+                        activeBg.mode === 'drawn' || activeBg.mode === 'chroma' || activeBg.mode === 'luma'
+                          ? 'pick'
+                          : activeBg.mode,
+                      backdropMode:
+                        activeBg.backdropMode === 'original'
+                          ? 'transparent'
+                          : activeBg.backdropMode,
+                    });
+                    onSetBgBrushMode(bgBrushMode === 'pick-keep' ? 'none' : 'pick-keep');
+                  }}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-1.5 rounded border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                    bgBrushMode === 'pick-keep'
+                      ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+                      : 'border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-emerald-500/60'
+                  }`}
+                >
+                  <MousePointerClick className="w-3 h-3 shrink-0" />
+                  <span>Keep +</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateBgRemoval({
+                      enabled: true,
+                      mode:
+                        activeBg.mode === 'drawn' || activeBg.mode === 'chroma' || activeBg.mode === 'luma'
+                          ? 'pick'
+                          : activeBg.mode,
+                      backdropMode:
+                        activeBg.backdropMode === 'original'
+                          ? 'transparent'
+                          : activeBg.backdropMode,
+                    });
+                    onSetBgBrushMode(bgBrushMode === 'pick-remove' ? 'none' : 'pick-remove');
+                  }}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-1.5 rounded border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                    bgBrushMode === 'pick-remove'
+                      ? 'border-red-400 bg-red-500/20 text-red-300'
+                      : 'border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-red-500/60'
+                  }`}
+                >
+                  <MousePointerClick className="w-3 h-3 shrink-0" />
+                  <span>Remove -</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={onExtractCutoutToOverlay}
+                className="py-2 px-2.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-zinc-950 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Make Overlay
+              </button>
+              <button
+                type="button"
+                onClick={onAddTextBehindSubject}
+                className="py-2 px-2.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Text Behind
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-zinc-300">Backdrop</label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(
+                  [
+                    { id: 'transparent', label: 'Transparent BG' },
+                    { id: 'blur', label: 'Portrait Blur' },
+                    { id: 'color', label: 'Solid Color' },
+                    { id: 'gradient', label: 'Studio Gradient' },
+                    { id: 'original', label: 'Original Scene' },
+                  ] as { id: BgBackdropMode; label: string }[]
+                ).map((bd) => (
+                  <button
+                    key={bd.id}
+                    type="button"
+                    onClick={() =>
+                      onUpdateBgRemoval({ enabled: true, backdropMode: bd.id })
+                    }
+                    className={`py-1.5 px-2 text-[11px] rounded border text-left cursor-pointer whitespace-nowrap ${
+                      activeBg.enabled && activeBg.backdropMode === bd.id
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    {bd.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1.5 border-t border-zinc-800/80 pt-3">
+              <label className="block text-xs font-medium text-zinc-300">Cutout Method</label>
+              <div className="grid grid-cols-2 gap-1">
+                {(
+                  [
+                    { id: 'auto', label: 'Auto Subject' },
+                    { id: 'pick', label: 'Pick Subject' },
+                    { id: 'drawn', label: 'Drawn Mask' },
+                    { id: 'chroma', label: 'Color Key' },
+                    { id: 'luma', label: 'Luma Key' },
+                  ] as { id: BgRemovalMode; label: string }[]
+                ).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      onUpdateBgRemoval({
+                        enabled: true,
+                        mode: m.id,
+                        backdropMode:
+                          activeBg.backdropMode === 'original'
+                            ? 'transparent'
+                            : activeBg.backdropMode,
+                      });
+                      if (
+                        m.id === 'pick' &&
+                        bgBrushMode !== 'pick-keep' &&
+                        bgBrushMode !== 'pick-remove'
+                      ) {
+                        onSetBgBrushMode('pick-keep');
+                      } else if (m.id === 'drawn' && bgBrushMode === 'none') {
+                        onSetBgBrushMode('keep');
+                      }
+                    }}
+                    className={`py-1.5 text-[11px] rounded border cursor-pointer whitespace-nowrap ${
+                      activeBg.mode === m.id
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-100'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {activeBg.mode === 'chroma' && (
+              <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-zinc-300">Key Color</span>
+                  <button
+                    type="button"
+                    onClick={onToggleBgEyedropper}
+                    className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium border cursor-pointer ${
+                      bgEyedropperActive
+                        ? 'border-amber-400 bg-amber-400 text-zinc-950'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-200 hover:border-amber-500'
+                    }`}
+                  >
+                    <Pipette className="w-3 h-3" />
+                    <span>{bgEyedropperActive ? 'Click Canvas' : 'Eyedropper'}</span>
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {['#16a34a', '#2563eb', '#f4f4f5', '#09090b', '#38bdf8'].map((hex) => (
+                    <button
+                      key={hex}
+                      type="button"
+                      onClick={() => onUpdateBgRemoval({ enabled: true, chromaColor: hex })}
+                      aria-label={`Key color ${hex}`}
+                      className={`w-5 h-5 rounded border cursor-pointer ${
+                        activeBg.chromaColor === hex ? 'border-amber-400 scale-110' : 'border-zinc-700'
+                      }`}
+                      style={{ backgroundColor: hex }}
+                    />
+                  ))}
+                  <input
+                    type="color"
+                    value={activeBg.chromaColor}
+                    onChange={(e) =>
+                      onUpdateBgRemoval({ enabled: true, chromaColor: e.target.value })
+                    }
+                    className="w-5 h-5 rounded bg-transparent border border-zinc-700 cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
+
+            {activeBg.mode === 'luma' && (
+              <div className="grid grid-cols-2 gap-1.5">
+                {(
+                  [
+                    { id: 'bright', label: 'Remove Bright' },
+                    { id: 'dark', label: 'Remove Dark' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onUpdateBgRemoval({ enabled: true, lumaTarget: opt.id })}
+                    className={`py-1.5 text-[11px] rounded border cursor-pointer ${
+                      activeBg.lumaTarget === opt.id
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                        : 'border-zinc-800 bg-zinc-900/60 text-zinc-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-2 border-t border-zinc-800/80 pt-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-zinc-300">Draw &amp; Touch-Up</span>
+                {((activeBg.pickPoints?.length || 0) > 0 ||
+                  (activeBg.strokes?.length || 0) > 0 ||
+                  (activeBg.drawnPolygons?.length || 0) > 0) && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={onUndoBgDraw}
+                      className="text-[11px] text-zinc-300 hover:text-amber-300 cursor-pointer"
+                    >
+                      Undo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onClearBgStrokes}
+                      className="text-[11px] text-zinc-400 hover:text-red-300 cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateBgRemoval({
+                      enabled: true,
+                      backdropMode:
+                        activeBg.backdropMode === 'original' ? 'transparent' : activeBg.backdropMode,
+                    });
+                    onSetBgBrushMode(bgBrushMode === 'keep' ? 'none' : 'keep');
+                  }}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-1.5 rounded border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                    bgBrushMode === 'keep'
+                      ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  <Paintbrush className="w-3 h-3 shrink-0" />
+                  <span>Paint +</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!activeBg.enabled || activeBg.mode !== 'drawn') {
+                      onUpdateBgRemoval({
+                        enabled: true,
+                        mode: 'drawn',
+                        backdropMode:
+                          activeBg.backdropMode === 'original'
+                            ? 'transparent'
+                            : activeBg.backdropMode,
+                      });
+                    }
+                    onSetBgBrushMode(bgBrushMode === 'lasso' ? 'none' : 'lasso');
+                  }}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-1.5 rounded border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                    bgBrushMode === 'lasso'
+                      ? 'border-amber-400 bg-amber-500/20 text-amber-300'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  <Lasso className="w-3 h-3 shrink-0" />
+                  <span>Lasso</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateBgRemoval({
+                      enabled: true,
+                      backdropMode:
+                        activeBg.backdropMode === 'original' ? 'transparent' : activeBg.backdropMode,
+                    });
+                    onSetBgBrushMode(bgBrushMode === 'erase' ? 'none' : 'erase');
+                  }}
+                  className={`flex items-center justify-center gap-1 py-1.5 px-1.5 rounded border text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                    bgBrushMode === 'erase'
+                      ? 'border-red-400 bg-red-500/20 text-red-300'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  <Eraser className="w-3 h-3 shrink-0" />
+                  <span>Erase -</span>
+                </button>
+              </div>
+              {(bgBrushMode === 'keep' || bgBrushMode === 'erase') && (
+                <SliderRow
+                  label="Brush Size"
+                  value={Math.round(bgBrushSize * 100)}
+                  min={2}
+                  max={14}
+                  unit="%"
+                  defaultValue={6}
+                  onChange={(v) => onSetBgBrushSize(v / 100)}
+                />
+              )}
+            </div>
+
+            <div className="space-y-3 border-t border-zinc-800/80 pt-3">
+              <SliderRow
+                label="Threshold"
+                value={activeBg.tolerance}
+                min={5}
+                max={95}
+                unit="%"
+                defaultValue={38}
+                onChange={(v) => onUpdateBgRemoval({ enabled: true, tolerance: v })}
+              />
+              <SliderRow
+                label="Edge Feather"
+                value={activeBg.softness}
+                min={0}
+                max={80}
+                unit="%"
+                defaultValue={18}
+                onChange={(v) => onUpdateBgRemoval({ enabled: true, softness: v })}
+              />
+              <SliderRow
+                label="Shrink / Expand"
+                value={activeBg.edgeShift}
+                min={-40}
+                max={40}
+                defaultValue={0}
+                onChange={(v) => onUpdateBgRemoval({ enabled: true, edgeShift: v })}
+              />
+
+              {(activeBg.backdropMode === 'color' || activeBg.backdropMode === 'gradient') && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-zinc-300">Backdrop Color</span>
+                  <div className="flex items-center gap-1">
+                    {['#09090b', '#f4f4f5', '#f59e0b', '#0f172a', '#7c2d12'].map((hex) => (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => onUpdateBgRemoval({ backdropColor: hex })}
+                        className={`w-5 h-5 rounded border cursor-pointer ${
+                          activeBg.backdropColor === hex
+                            ? 'border-amber-400 scale-110'
+                            : 'border-zinc-700'
+                        }`}
+                        style={{ backgroundColor: hex }}
+                      />
+                    ))}
+                    <input
+                      type="color"
+                      value={activeBg.backdropColor}
+                      onChange={(e) => onUpdateBgRemoval({ backdropColor: e.target.value })}
+                      className="w-5 h-5 rounded bg-transparent border border-zinc-700 cursor-pointer"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {activeBg.backdropMode === 'blur' && (
+                <SliderRow
+                  label="Backdrop Blur"
+                  value={activeBg.backdropBlur}
+                  min={10}
+                  max={100}
+                  unit="%"
+                  defaultValue={55}
+                  onChange={(v) => onUpdateBgRemoval({ backdropBlur: v })}
+                />
+              )}
+
+              <div className="flex items-center justify-between pt-1">
+                <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={activeBg.invert}
+                    onChange={(e) => onUpdateBgRemoval({ invert: e.target.checked })}
+                    className="accent-amber-500"
+                  />
+                  <span>Invert Cutout</span>
+                </label>
+                {activeBg.enabled && (
+                  <button
+                    type="button"
+                    onClick={() => onUpdateBgRemoval({ ...DEFAULT_BG_REMOVAL })}
+                    className="text-[11px] text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'effects' && (
           <div className="space-y-3.5">
             {!isAuthenticated && (
@@ -1387,12 +2449,151 @@ export const Inspector: React.FC<InspectorProps> = ({
                   className="accent-amber-500"
                 />
               </label>
+
+              <div className="pt-3 border-t border-zinc-800/80 space-y-3.5">
+                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-amber-400">
+                  AE Optics &amp; VFX
+                </h4>
+                <SliderRow
+                  label="Deep Glow"
+                  value={edits.effects.glowBloom ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ glowBloom: v })
+                      : onRequireAuth('Sign in or create an account to use Deep Glow FX.')
+                  }
+                />
+                <SliderRow
+                  label="CC Radial Zoom Blur"
+                  value={edits.effects.radialBlur ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ radialBlur: v })
+                      : onRequireAuth('Sign in or create an account to use CC Radial Zoom Blur.')
+                  }
+                />
+                <SliderRow
+                  label="Directional Motion Blur"
+                  value={edits.effects.motionBlur ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ motionBlur: v })
+                      : onRequireAuth('Sign in or create an account to use Directional Motion Blur.')
+                  }
+                />
+                <SliderRow
+                  label="Digital Glitch"
+                  value={edits.effects.glitch ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ glitch: v })
+                      : onRequireAuth('Sign in or create an account to use Digital Glitch FX.')
+                  }
+                />
+                <SliderRow
+                  label="Mosaic Pixelate"
+                  value={edits.effects.pixelate ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ pixelate: v })
+                      : onRequireAuth('Sign in or create an account to use Mosaic Pixelate.')
+                  }
+                />
+                <SliderRow
+                  label="Posterize Levels"
+                  value={edits.effects.posterize ?? 0}
+                  min={0}
+                  max={100}
+                  onChange={(v) =>
+                    isAuthenticated
+                      ? onUpdateEffects({ posterize: v })
+                      : onRequireAuth('Sign in or create an account to use Posterize.')
+                  }
+                />
+
+                <div className="space-y-1.5">
+                  <span className="block text-xs text-zinc-300">Symmetry / Mirror Tile</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    {MIRROR_TILE_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          isAuthenticated
+                            ? onUpdateEffects({ mirrorTile: opt.id })
+                            : onRequireAuth('Sign in or create an account to use Mirror Tile FX.')
+                        }
+                        className={`py-1.5 px-1 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                          (edits.effects.mirrorTile || 'none') === opt.id
+                            ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                            : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <span className="block text-xs text-zinc-300">AE Gradient Map / Tritone</span>
+                  <div className="flex flex-wrap gap-1">
+                    {DUOTONE_MAP_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          isAuthenticated
+                            ? onUpdateEffects({ duotone: opt.id })
+                            : onRequireAuth('Sign in or create an account to use AE Gradient Maps.')
+                        }
+                        className={`py-1 px-2 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                          (edits.effects.duotone || 'none') === opt.id
+                            ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                            : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
 
         {activeTab === 'animate' && workspace === 'timeline' && selectedClip && (
           <div className="space-y-4">
+            {onConvertClipToOverlay && (
+              <div className="rounded-lg border border-violet-500/35 bg-violet-500/10 p-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-violet-200">Convert to Overlay</p>
+                  <p className="text-[10px] text-zinc-400 truncate">
+                    Move clip from Main track to PiP Overlay track
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onConvertClipToOverlay(selectedClip.id)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-violet-500 hover:bg-violet-400 text-zinc-950 text-[11px] font-semibold shrink-0 cursor-pointer whitespace-nowrap"
+                >
+                  <Layers className="w-3 h-3" />
+                  <span>→ Overlay</span>
+                </button>
+              </div>
+            )}
+
             {!isAuthenticated && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -1484,7 +2685,15 @@ export const Inspector: React.FC<InspectorProps> = ({
 
             {/* Velocity Speed Curve */}
             <div className="border-t border-zinc-800/80 pt-4 space-y-2.5">
-              <h3 className="text-xs font-semibold text-zinc-200">Velocity Speed Curve</h3>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-semibold text-zinc-200">Velocity Speed Curve</h3>
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    {selectedClip.velocityPreset}
+                  </span>
+                </div>
+                <AeMotionCurveGraph mode={selectedClip.velocityPreset} />
+              </div>
               <div className="grid grid-cols-2 gap-1.5">
                 {VELOCITY_PRESETS.map((vp) => (
                   <button
@@ -1573,83 +2782,463 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         )}
 
-        {/* Photo Lab Text Tab */}
+        {/* Photo Lab Layers & Text Tab */}
         {activeTab === 'animate' && workspace === 'photo' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-zinc-200">Photo Typography</h3>
-              <button
-                type="button"
-                onClick={onAddPhotoTextOverlay}
-                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded bg-zinc-800 hover:bg-amber-500 hover:text-zinc-950 text-zinc-100 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Text</span>
-              </button>
+          <div className="space-y-5">
+            {/* Visual & Image Overlays */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold text-zinc-200">Photo Overlays</h3>
+                <button
+                  type="button"
+                  onClick={onOpenOverlaysDrawer}
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded bg-zinc-800 hover:bg-amber-500 hover:text-zinc-950 text-zinc-100 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Overlay</span>
+                </button>
+              </div>
+
+              {(edits.visualOverlays || []).length === 0 ? (
+                <p className="text-xs text-zinc-500">
+                  Layer Light Leaks, 35mm Dust, Film Frames, or custom PNG/PiP images over your photo.
+                </p>
+              ) : (
+                (edits.visualOverlays || []).map((vov) => {
+                  const isVovSelected = vov.id === selectedPhotoVisualOverlayId;
+                  const vovBg = vov.bgRemoval || DEFAULT_BG_REMOVAL;
+                  return (
+                    <div
+                      key={vov.id}
+                      onClick={() => onSelectPhotoVisualOverlay?.(vov.id)}
+                      className={`rounded-lg border p-3 space-y-3 transition-colors ${
+                        isVovSelected
+                          ? 'border-amber-500 bg-zinc-900/80'
+                          : 'border-zinc-800 bg-zinc-900/50 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-zinc-100 truncate">
+                          {vov.name}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRemovePhotoVisualOverlay(vov.id);
+                          }}
+                          aria-label={`Remove ${vov.name}`}
+                          className="p-1 text-zinc-400 hover:text-red-400 cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {vov.kind === 'image' && (
+                        <div className="space-y-2.5 rounded-md border border-zinc-800 bg-zinc-950/70 p-2.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onUpdatePhotoVisualOverlay(vov.id, {
+                                bgRemoval: {
+                                  ...vovBg,
+                                  enabled: !vovBg.enabled,
+                                  mode: vovBg.mode === 'drawn' ? 'auto' : vovBg.mode || 'auto',
+                                  backdropMode: 'transparent',
+                                },
+                              });
+                            }}
+                            className={`w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded border text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                              vovBg.enabled
+                                ? 'border-emerald-400 bg-emerald-500/20 text-emerald-300'
+                                : 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-amber-500'
+                            }`}
+                          >
+                            <Scissors className="w-3.5 h-3.5" />
+                            <span>
+                              {vovBg.enabled ? 'BG Removal Active' : 'Remove Overlay Background'}
+                            </span>
+                          </button>
+
+                          {vovBg.enabled && (
+                            <div className="space-y-2 pt-1 border-t border-zinc-800/80">
+                              <div className="grid grid-cols-3 gap-1">
+                                {(
+                                  [
+                                    { id: 'auto', label: 'Auto' },
+                                    { id: 'chroma', label: 'Color Key' },
+                                    { id: 'luma', label: 'Luma Key' },
+                                  ] as { id: BgRemovalMode; label: string }[]
+                                ).map((m) => (
+                                  <button
+                                    key={m.id}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onUpdatePhotoVisualOverlay(vov.id, {
+                                        bgRemoval: {
+                                          ...vovBg,
+                                          enabled: true,
+                                          mode: m.id,
+                                          backdropMode: 'transparent',
+                                        },
+                                      });
+                                    }}
+                                    className={`py-1 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                                      vovBg.mode === m.id
+                                        ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100'
+                                    }`}
+                                  >
+                                    {m.label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {vovBg.mode === 'auto' && (
+                                <div className="grid grid-cols-3 gap-1">
+                                  {(
+                                    [
+                                      { id: 'smart', label: 'Smart' },
+                                      { id: 'person', label: 'Person' },
+                                      { id: 'object', label: 'Object' },
+                                    ] as { id: BgAutoSubjectType; label: string }[]
+                                  ).map((t) => (
+                                    <button
+                                      key={t.id}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onUpdatePhotoVisualOverlay(vov.id, {
+                                          bgRemoval: {
+                                            ...vovBg,
+                                            enabled: true,
+                                            mode: 'auto',
+                                            autoSubjectType: t.id,
+                                            backdropMode: 'transparent',
+                                          },
+                                        });
+                                      }}
+                                      className={`py-1 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                                        (vovBg.autoSubjectType || 'smart') === t.id
+                                          ? 'border-emerald-400 bg-emerald-500/15 text-emerald-300 font-medium'
+                                          : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-100'
+                                      }`}
+                                    >
+                                      {t.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              <SliderRow
+                                label="Threshold"
+                                value={vovBg.tolerance}
+                                min={5}
+                                max={95}
+                                unit="%"
+                                defaultValue={38}
+                                onChange={(val) =>
+                                  onUpdatePhotoVisualOverlay(vov.id, {
+                                    bgRemoval: { ...vovBg, enabled: true, tolerance: val },
+                                  })
+                                }
+                              />
+                              <SliderRow
+                                label="Edge Feather"
+                                value={vovBg.softness}
+                                min={0}
+                                max={80}
+                                unit="%"
+                                defaultValue={18}
+                                onChange={(val) =>
+                                  onUpdatePhotoVisualOverlay(vov.id, {
+                                    bgRemoval: { ...vovBg, enabled: true, softness: val },
+                                  })
+                                }
+                              />
+                              <label
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={vovBg.invert}
+                                  onChange={(e) =>
+                                    onUpdatePhotoVisualOverlay(vov.id, {
+                                      bgRemoval: {
+                                        ...vovBg,
+                                        enabled: true,
+                                        invert: e.target.checked,
+                                      },
+                                    })
+                                  }
+                                  className="accent-amber-500"
+                                />
+                                <span>Invert Cutout</span>
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-1 p-1 bg-zinc-950 rounded border border-zinc-800">
+                        {(
+                          [
+                            { id: 'front', label: 'In Front' },
+                            { id: 'behind', label: 'Behind Subject' },
+                          ] as { id: OverlayLayerOrder; label: string }[]
+                        ).map((pos) => (
+                          <button
+                            key={pos.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdatePhotoVisualOverlay(vov.id, { layerOrder: pos.id })
+                            }
+                            className={`py-1 text-[10px] font-medium rounded cursor-pointer whitespace-nowrap ${
+                              (vov.layerOrder || 'front') === pos.id
+                                ? 'bg-amber-500/20 text-amber-300'
+                                : 'text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            {pos.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {OVERLAY_BLEND_MODES.map((bm) => (
+                          <button
+                            key={bm.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdatePhotoVisualOverlay(vov.id, { blendMode: bm.id })
+                            }
+                            className={`py-1 px-2 text-[10px] rounded border cursor-pointer whitespace-nowrap ${
+                              vov.blendMode === bm.id
+                                ? 'border-amber-500 bg-amber-500/15 text-amber-300 font-medium'
+                                : 'border-zinc-800 bg-zinc-950 text-zinc-400'
+                            }`}
+                          >
+                            {bm.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <SliderRow
+                        label="Opacity"
+                        value={Math.round(vov.opacity * 100)}
+                        min={5}
+                        max={100}
+                        unit="%"
+                        defaultValue={78}
+                        onChange={(val) =>
+                          onUpdatePhotoVisualOverlay(vov.id, { opacity: val / 100 })
+                        }
+                      />
+                      <SliderRow
+                        label="Scale"
+                        value={Math.round(vov.scale * 100)}
+                        min={25}
+                        max={250}
+                        unit="%"
+                        defaultValue={100}
+                        onChange={(val) =>
+                          onUpdatePhotoVisualOverlay(vov.id, { scale: val / 100 })
+                        }
+                      />
+                      <SliderRow
+                        label="Rotation"
+                        value={Math.round(vov.rotation)}
+                        min={-180}
+                        max={180}
+                        unit="°"
+                        defaultValue={0}
+                        onChange={(val) =>
+                          onUpdatePhotoVisualOverlay(vov.id, { rotation: val })
+                        }
+                      />
+                    </div>
+                  );
+                })
+              )}
             </div>
 
-            {edits.overlays.length === 0 ? (
-              <p className="text-xs text-zinc-500">
-                Add titles or captions in 6 different fonts and drag them directly on the photo.
-              </p>
-            ) : (
-              edits.overlays.map((ov) => (
-                <div
-                  key={ov.id}
-                  className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-3"
-                >
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={ov.text}
-                      onChange={(e) =>
-                        onUpdatePhotoTextOverlay(ov.id, { text: e.target.value })
-                      }
-                      className="flex-1 px-2.5 py-1.5 text-xs bg-zinc-950 border border-zinc-800 rounded text-zinc-100"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onRemovePhotoTextOverlay(ov.id)}
-                      className="p-1.5 text-zinc-400 hover:text-red-400 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-1">
-                    {FONT_OPTIONS.map((font) => (
-                      <button
-                        key={font.id}
-                        type="button"
-                        onClick={() =>
-                          onUpdatePhotoTextOverlay(ov.id, {
-                            fontFamily: font.id as FontFamilyId,
-                          })
-                        }
-                        style={{ fontFamily: font.cssFamily }}
-                        className={`px-2 py-1 text-[11px] rounded border text-left truncate cursor-pointer ${
-                          ov.fontFamily === font.id
-                            ? 'border-amber-500 bg-amber-500/15 text-zinc-50'
-                            : 'border-zinc-800 bg-zinc-950 text-zinc-300'
-                        }`}
-                      >
-                        {font.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <SliderRow
-                    label="Size"
-                    value={ov.fontSize}
-                    min={18}
-                    max={96}
-                    unit="px"
-                    defaultValue={44}
-                    onChange={(v) => onUpdatePhotoTextOverlay(ov.id, { fontSize: v })}
-                  />
+            <div className="border-t border-zinc-800/80 pt-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-zinc-200">Photo Typography</h3>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={onAddTextBehindSubject}
+                    className="px-2 py-1 text-[11px] font-semibold rounded bg-amber-400 hover:bg-amber-300 text-zinc-950 cursor-pointer whitespace-nowrap"
+                  >
+                    Behind Subject
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onAddPhotoTextOverlay}
+                    className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 cursor-pointer whitespace-nowrap"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add</span>
+                  </button>
                 </div>
-              ))
-            )}
+              </div>
+
+              {edits.overlays.length === 0 ? (
+                <p className="text-xs text-zinc-500">
+                  Add titles in front or behind your isolated subject and drag them anywhere on the canvas.
+                </p>
+              ) : (
+                edits.overlays.map((ov, idx) => {
+                  const isExpanded =
+                    selectedPhotoOverlayId === ov.id ||
+                    (!selectedPhotoOverlayId && idx === edits.overlays.length - 1);
+                  const fxPreview = normalizeTextEffects(ov.text3d);
+                  return (
+                    <div
+                      key={ov.id}
+                      className={`rounded-lg border transition-colors ${
+                        isExpanded
+                          ? 'border-amber-500/60 bg-zinc-900/60'
+                          : 'border-zinc-800 bg-zinc-900/35 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div
+                        onClick={() => onSelectPhotoOverlay?.(ov.id)}
+                        className="flex items-center justify-between gap-2 px-2.5 py-2 cursor-pointer"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border border-zinc-700 shrink-0"
+                            style={{ backgroundColor: ov.color }}
+                          />
+                          <span className="text-xs font-medium text-zinc-100 truncate">
+                            {ov.text || 'Untitled Text'}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-950 border border-zinc-800 text-[9px] font-mono text-zinc-400 shrink-0">
+                            {ov.layerOrder === 'behind'
+                              ? 'Behind'
+                              : fxPreview.enabled && fxPreview.style !== 'none'
+                                ? fxPreview.style
+                                : '2D'}
+                          </span>
+                        </div>
+                        <div
+                          className="flex items-center gap-0.5 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {onReorderPhotoTextOverlay && edits.overlays.length > 1 && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => onReorderPhotoTextOverlay(ov.id, -1)}
+                                title="Send layer down"
+                                className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 cursor-pointer"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === edits.overlays.length - 1}
+                                onClick={() => onReorderPhotoTextOverlay(ov.id, 1)}
+                                title="Bring layer up"
+                                className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 cursor-pointer"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onDuplicatePhotoTextOverlay(ov.id)}
+                            title="Duplicate text layer"
+                            className="p-1 text-zinc-400 hover:text-amber-300 cursor-pointer"
+                          >
+                            <Copy className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRemovePhotoTextOverlay(ov.id)}
+                            title="Remove text layer"
+                            className="p-1 text-zinc-400 hover:text-red-400 cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="px-2.5 pb-3 pt-1 border-t border-zinc-800/80 space-y-3">
+                          <TextEffectsEditor
+                            text={ov.text}
+                            fontSize={ov.fontSize}
+                            fontFamily={ov.fontFamily}
+                            letterSpacing={ov.letterSpacing ?? 0}
+                            color={ov.color}
+                            backdrop={ov.backdrop}
+                            styleTemplate={ov.styleTemplate}
+                            text3d={ov.text3d}
+                            layerOrder={ov.layerOrder || 'front'}
+                            blendMode={ov.blendMode || 'normal'}
+                            x={ov.x}
+                            y={ov.y}
+                            scale={ov.scale ?? 1}
+                            rotation={ov.rotation ?? 0}
+                            opacity={ov.opacity ?? 1}
+                            onDuplicate={() => onDuplicatePhotoTextOverlay(ov.id)}
+                            onChange={(patch) => onUpdatePhotoTextOverlay(ov.id, patch)}
+                          />
+                          <div className="pt-2 border-t border-zinc-800/80 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-medium text-zinc-300 font-mono">
+                                wiggle({(ov.wiggleFreq ?? 3).toFixed(1)}, {Math.round(ov.wiggleAmp ?? 0)})
+                              </span>
+                              {(ov.wiggleAmp ?? 0) > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onUpdatePhotoTextOverlay(ov.id, { wiggleAmp: 0 })
+                                  }
+                                  className="text-[10px] text-amber-400 hover:text-amber-300 cursor-pointer"
+                                >
+                                  Off
+                                </button>
+                              )}
+                            </div>
+                            <SliderRow
+                              label="Wiggle Amp"
+                              value={Math.round(ov.wiggleAmp ?? 0)}
+                              min={0}
+                              max={60}
+                              defaultValue={0}
+                              onChange={(v) =>
+                                onUpdatePhotoTextOverlay(ov.id, { wiggleAmp: v })
+                              }
+                            />
+                            <SliderRow
+                              label="Wiggle Freq"
+                              value={Number((ov.wiggleFreq ?? 3).toFixed(1))}
+                              min={0.5}
+                              max={16}
+                              step={0.5}
+                              unit="Hz"
+                              defaultValue={3}
+                              onChange={(v) =>
+                                onUpdatePhotoTextOverlay(ov.id, { wiggleFreq: v })
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         )}
       </div>
